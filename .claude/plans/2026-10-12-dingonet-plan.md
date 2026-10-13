@@ -290,6 +290,26 @@ the first CI run passed all six jobs. Differences from the spec above:
 - Headstone itself stays Windows-only for now (it links `Bcrypt` and builds only with MSVC); DingoNet's
   Linux side is proven by its own tests in phases 3–5, not by Headstone.
 
+**As built (2026-10-13)**: Headstone `feat/dingonet` @ `4da5842` (worktree
+`Headstone/.claude/worktrees/dingonet`), committed, not pushed (Headstone pushes only when asked).
+Opus-reviewed (1 High, 1 Medium, 6 Low; all fixed or noted). No DingoNet API change was needed; the
+review led to two DingoNet fixes (`23c2c2c` scripts no longer pause when called with arguments,
+`1c99543` the Steam ignore window is 1 s).
+- `ContentHash` = `World::LayoutHash`, over the map builders' exact inputs (prop fields, mesh bounds,
+  AddBox/AddCircle/AddRiseSpot arguments, map constants, `Tuning::ENEMY_RADIUS`), computed once behind
+  the loading screen (58–92 ms). Map code uses `Layout::Sin/Cos/Atan2/...` (`MapKit.h`, `+ - * /` and
+  `sqrt` in double) because the x64 CRT's trig takes an FMA path on some CPUs, which could give two
+  players on one build different hashes.
+- `UnseatedPacket` answers a protocol-19 Hello (id 0x40) with the old Reject bytes, so an old client
+  sees "VERSION MISMATCH". The reverse (a new client, an old host, over TCP) still times out; Steam
+  lobbies catch it first through their `proto` data.
+- Clients now get join/leave toasts for other clients (`Existing` roster entries toast nothing); the
+  mirror re-seats only slots the session lists, which ended a 2 s "PLAYER N" flicker after a leave.
+- Verified hidden: `--net-selftest`, `--loc-selftest`, `--net-loopback=100,5`, 2- and 3-player TCP
+  co-op with a kill, `--net-churn`, a `--net-proto=19` client. Open: the 20-minute soak, the
+  two-account Steam session, and Headstone's CI, which 404s until a DingoNet `v0.1.0` release exists
+  (`fetch-dingonet.ps1` pins the version and build in two lines).
+
 **Estimate**: phases 1–5 about a day and a half of agent time, Linux included; phase 6 about half a
 day plus the manual two-machine Steam check.
 

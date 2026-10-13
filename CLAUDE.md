@@ -97,7 +97,7 @@ The core links only the OS: Winsock (`ws2_32`, pulled in by `#pragma comment` in
 
 See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 
-- **v0.1 Extract** (in progress): phase 1 (repo skeleton, scripts), phase 2 (bytes), phase 3 (transports: Winsock + POSIX TCP, loopback, conditioner), phase 4 (session) and phase 5 (package + CI) done; next phase 6 (Headstone running on the package).
+- **v0.1 Extract** (built, not yet released): phases 1–5 in this repo, phase 6 on Headstone `feat/dingonet` (`4da5842`, unpushed). Left before the `v0.1.0` tag: an Opus review of the whole v0.1 diff; after it: the release, Headstone's `fetch-dingonet.ps1` pin, the 20-minute soak and the two-account Steam check.
 - **v0.2 Structure**: message registry, session epoch, generic `Mirror<T>` interpolation.
 - **v0.3 UDP**: a reliable-UDP transport, LAN play without Steam.
 - **v0.4 Engine bridge**: `DingoNet-Engine`.
