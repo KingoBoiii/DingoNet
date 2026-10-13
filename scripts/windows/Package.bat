@@ -1,5 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
+set "DN_ARGS=%*"
 pushd "%~dp0..\.."
 
 set CONFIGS=%*
@@ -45,7 +46,7 @@ for %%C in (%CONFIGS%) do (
 
 call :restore
 popd
-echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
+if not defined DN_ARGS echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
 exit /b 0
 
 :norm
@@ -90,5 +91,5 @@ exit /b 0
 :fail
 call :restore
 popd
-echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
+if not defined DN_ARGS echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
 exit /b 1

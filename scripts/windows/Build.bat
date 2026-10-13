@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "DN_ARGS=%*"
 set CONFIG=%~1
 if "%CONFIG%"=="" set CONFIG=Debug
 pushd "%~dp0..\.."
@@ -18,10 +19,10 @@ if not defined MSBUILD (
 "%MSBUILD%" DingoNet.slnx /p:Configuration=%CONFIG% /p:Platform=x64 /m /v:minimal /nologo || goto :fail
 
 popd
-echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
+if not defined DN_ARGS echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
 exit /b 0
 
 :fail
 popd
-echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
+if not defined DN_ARGS echo %CMDCMDLINE% | "%SystemRoot%\System32\find.exe" /i "%~f0" >nul && pause
 exit /b 1
