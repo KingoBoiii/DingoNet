@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and upload to (vX.Y.Z)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  WINDOWS_TOOLSET: v143
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.TAG }}
+        fetch-depth: 0
+
+    - uses: microsoft/setup-msbuild@v1.1
+      with:
+        msbuild-architecture: x64
+
+    - name: Get version
+      id: version
+      shell: pwsh
+      run: |
+        $tag = "${{ env.TAG }}"
+        if ($tag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') { throw "Not a release tag: $tag" }
+        $base = (Get-Content VERSION).Trim()
+        if ("$($Matches[1]).$($Matches[2])" -ne $base) { throw "Tag $tag does not match VERSION $base" }
+        $commits = git rev-list --count HEAD
+        echo "VERSION=$($Matches[1]).$($Matches[2]).$($Matches[3])" >> $env:GITHUB_OUTPUT
+        echo "MAJOR=$($Matches[1])" >> $env:GITHUB_OUTPUT
+        echo "MINOR=$($Matches[2])" >> $env:GITHUB_OUTPUT
+        echo "PATCH=$($Matches[3])" >> $env:GITHUB_OUTPUT
+        echo "BUILD=$commits" >> $env:GITHUB_OUTPUT
+
+    - name: Write BuildInfo.h
+      shell: pwsh
+      run: |
+        "#pragma once", "", "#define DN_VERSION_MAJOR ${{ steps.version.outputs.MAJOR }}", "#define DN_VERSION_MINOR ${{ steps.version.outputs.MINOR }}", "#define DN_VERSION_PATCH ${{ steps.version.outputs.PATCH }}", "#define DN_VERSION_BUILD ${{ steps.version.outputs.BUILD }}" | Set-Content include/DingoNet/BuildInfo.h -Encoding utf8
+
+    - name: Premake
+      run: vendor\premake\bin\premake5.exe vs2026
+
+    - name: Build
+      shell: pwsh
+      run: |
+        foreach ($config in 'Debug', 'Release', 'Distribution') {
+          msbuild DingoNet.slnx /m /nologo /v:minimal /p:Configuration=$config /p:Platform=x64 /p:PlatformToolset=${{ env.WINDOWS_TOOLSET }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+
+    - name: Test
+      run: build\bin\Release-windows-x86_64\DingoNet-Tests\DingoNet-Tests.exe
+
+    - name: Package
+      shell: cmd
+      env:
+        DN_NO_BUILD: '1'
+        DN_VERSION: ${{ steps.version.outputs.VERSION }}
+        DN_BUILD_NUMBER: ${{ steps.version.outputs.BUILD }}
+      run: scripts\windows\Package.bat Debug Release Distribution
+
+    - name: Upload to GitHub Release
+      shell: pwsh
+      run: |
+        gh release view $env:TAG *> $null
+        if ($LASTEXITCODE -ne 0) {
+          gh release create $env:TAG --verify-tag --title $env:TAG --notes "" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Start-Sleep -Seconds 5
+            gh release view $env:TAG *> $null
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+        }
+        gh release upload $env:TAG (Get-ChildItem build/package/*.zip).FullName --clobber
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dingonet-windows
+        path: build/package/*.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.TAG }}
+        fetch-depth: 0
+
+    - name: Get version
+      id: version
+      run: |
+        tag="${{ env.TAG }}"
+        [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "Not a release tag: $tag"; exit 1; }
+        [ "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" = "$(tr -d '[:space:]' < VERSION)" ] || { echo "Tag $tag does not match VERSION"; exit 1; }
+        {
+          echo "VERSION=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          echo "MAJOR=${BASH_REMATCH[1]}"
+          echo "MINOR=${BASH_REMATCH[2]}"
+          echo "PATCH=${BASH_REMATCH[3]}"
+          echo "BUILD=$(git rev-list --count HEAD)"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Write BuildInfo.h
+      run: |
+        printf '%s\n' "#pragma once" "" \
+          "#define DN_VERSION_MAJOR ${{ steps.version.outputs.MAJOR }}" \
+          "#define DN_VERSION_MINOR ${{ steps.version.outputs.MINOR }}" \
+          "#define DN_VERSION_PATCH ${{ steps.version.outputs.PATCH }}" \
+          "#define DN_VERSION_BUILD ${{ steps.version.outputs.BUILD }}" > include/DingoNet/BuildInfo.h
+
+    - name: Test
+      run: bash scripts/linux/Test.sh Release
+
+    - name: Package
+      run: bash scripts/linux/Package.sh Debug Release Distribution
+      env:
+        DN_VERSION: ${{ steps.version.outputs.VERSION }}
+        DN_BUILD_NUMBER: ${{ steps.version.outputs.BUILD }}
+
+    - name: Upload to GitHub Release
+      run: |
+        if ! gh release view "$TAG" >/dev/null 2>&1; then
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes "" || { sleep 5; gh release view "$TAG" >/dev/null; }
+        fi
+        gh release upload "$TAG" build/package/*.zip --clobber
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dingonet-linux
+        path: build/package/*.zip

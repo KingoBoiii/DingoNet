@@ -1,0 +1,71 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+env:
+  WINDOWS_TOOLSET: v143
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release, Distribution]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - uses: microsoft/setup-msbuild@v1.1
+      with:
+        msbuild-architecture: x64
+
+    - name: Write BuildInfo.h
+      shell: pwsh
+      run: |
+        $parts = (Get-Content VERSION).Trim().Split('.')
+        $commits = git rev-list --count HEAD
+        "#pragma once", "", "#define DN_VERSION_MAJOR $($parts[0])", "#define DN_VERSION_MINOR $($parts[1])", "#define DN_VERSION_PATCH $commits", "#define DN_VERSION_BUILD $commits" | Set-Content include/DingoNet/BuildInfo.h -Encoding utf8
+
+    - name: Premake
+      run: vendor\premake\bin\premake5.exe vs2026
+
+    - name: Build
+      run: msbuild DingoNet.slnx /m /nologo /v:minimal /p:Configuration=${{ matrix.configuration }} /p:Platform=x64 /p:PlatformToolset=${{ env.WINDOWS_TOOLSET }}
+
+    - name: Test
+      run: build\bin\${{ matrix.configuration }}-windows-x86_64\DingoNet-Tests\DingoNet-Tests.exe
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release, Distribution]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Write BuildInfo.h
+      run: |
+        read -r major minor < <(tr . ' ' < VERSION)
+        commits=$(git rev-list --count HEAD)
+        printf '%s\n' "#pragma once" "" \
+          "#define DN_VERSION_MAJOR $major" \
+          "#define DN_VERSION_MINOR $minor" \
+          "#define DN_VERSION_PATCH $commits" \
+          "#define DN_VERSION_BUILD $commits" > include/DingoNet/BuildInfo.h
+
+    - name: Build and test
+      run: |
+        g++ --version | head -1
+        bash scripts/linux/Test.sh ${{ matrix.configuration }}
