@@ -149,6 +149,46 @@ boundaries. Deliberate differences:
   closing mid-send (no `SIGPIPE`, a `Disconnected` event); Loopback + Conditioner at 200 ms / 5 % loss
   delivering every reliable packet in order. Once by hand: a Windows host and a WSL2 client.
 
+**As built (2026-10-13)**: `Transport.h`, `TcpTransport.h`, `LoopbackTransport.h`, `Conditioner.h`; sockets behind
+`src/Platform/Socket.h` (`WinSocket.cpp` / `PosixSocket.cpp`, one per system, `Socket.cpp` shared); 22 tests in
+`tests/TcpTests.cpp` and `tests/TransportTests.cpp`, passing on Windows and Linux, Debug and Release (about 2.4 s on
+Windows, where a refused connect takes Windows' SYN retries; under 0.1 s on Linux). An Opus review's 12 findings
+are fixed. The frame format, the caps and the read-before-send order are Headstone's; built without `MSG_NOSIGNAL`,
+the Linux run dies of `SIGPIPE` (exit 141) in `TcpSocketSendsAfterAResetFailWithoutSigpipe`, the SIGPIPE coverage
+(the transport reads first, so its own reads meet a reset before a send can).
+Cross-OS: a WSL2 (NAT) host and a Windows client exchanged 200 echoed packets (`--tcp-host`/`--tcp-client` on
+`DingoNet-Tests`); a Windows host was not tried, since the host firewall has no inbound rule for the WSL interface
+and would block it (and prompt). Deliberate differences:
+- `Send` takes `std::span<const uint8_t>` (a `std::vector` converts). `PeerEvent` carries a `DisconnectReason` and
+  a `Detail` for logs instead of English text: `Refused` (RST on connect), `ConnectFailed` (anything else before
+  connecting, the 5 s timeout included), `Closed` (FIN), `Reset` (reset or abort), `TimedOut` (`ETIMEDOUT` on a live
+  socket), `Error` (bad frame, full send queue, other socket errors).
+- `TcpTransport` has no `SetConditions` and no built-in conditioner: `Conditioner` is a `Transport` that owns the
+  transport it wraps and conditions what is sent through it, so it works over Loopback (and Steam) too. It adds
+  jitter (a reliable packet's release time never precedes the previous reliable one's), a `Seed`, a `Clock` hook
+  (Headstone's `--net-loopback` drives its queue with the game's net clock) and a pass-through while inactive.
+  Its `Disconnect`/`Close` release what it holds first, as Headstone's `HangUp` popped the link.
+- The caps are `TcpParams` (same defaults); `DEFAULT_PORT` stays in the game; port 0 binds any free port and
+  `GetPort()` reports it.
+- A reliable packet over the frame cap is logged and dropped by the sender (Headstone sent it and the receiver
+  dropped the connection as a bad frame); an unreliable one over `MAX_UNRELIABLE_BYTES` is logged and dropped by
+  every transport. A bad incoming frame, a full send queue, a connection past `MaxConnections` and a failed
+  `accept` now log a warning (Headstone was silent).
+- A connect that fails at once returns a transport that reports `Refused`/`ConnectFailed` at its first `Poll`
+  (Headstone returned null with an error); a bad address or a socket that can't be made still returns null.
+- Linux listeners set `SO_REUSEADDR`; Windows keeps `SO_EXCLUSIVEADDRUSE`. Sent bytes leave the queue once per
+  `Poll` instead of after every `send` call (the same bytes, no quadratic erase).
+- `LoopbackTransport` is new: `Listen()`, `Connect(host)` (many clients), `CreateLoopbackPair()`; it has no frame
+  cap, so a reliable packet over 64 KB passes there and is dropped over TCP.
+- `Disconnect` flushes the whole queue over later `Poll`s and shuts our side only once it is empty (Headstone sent
+  once without waiting and cleared the rest, cutting a big parting frame); `Close` flushes for at most 0.25 s.
+- Reads are capped at `MaxReadBytesPerPoll` (256 KB) per connection per `Poll` (Headstone read until `WouldBlock`, so
+  a flooding peer could stall a frame); the queue cap is checked after the flush, not before; `MaxConnections`
+  counts live connections only, so a kicked player can reconnect while the old socket lingers.
+- Sockets are close-on-exec / not inheritable; durations are clamped (NaN 0, at most 1e6 s) before the chrono cast.
+- `Conditioner` drops what it holds for a peer the inner transport reports lost, and orders a reliable packet after
+  the previous one only while that one is still held (a clock that jumps back doesn't stall it).
+
 ### Phase 4 — session
 - `SessionParams`:
   - `int MaxSlots = 4` (1–32; seats become a `std::vector`)

@@ -24,8 +24,10 @@ DingoNet is a cross-platform C++20 netcode library for DingoEngine games: byte s
 ```
 include/DingoNet/        Public API headers: plain C++20, no platform header
 src/                     Implementations
-  Internal/              Logging helpers (Internal::LogInfo...)
-  Platform/              The only place for winsock2.h, sys/socket.h, unistd.h (phase 3)
+  Internal/              Logging helpers (Internal::LogInfo...), the unreliable size check
+  Platform/              Socket.h (internal socket API, one SocketError enum), Socket.cpp,
+                         WinSocket.cpp (Winsock2) | PosixSocket.cpp (BSD sockets): the only place
+                         for winsock2.h, sys/socket.h, unistd.h; premake builds one per system
 tests/                   DingoNet-Tests: own runner (TestFramework.h), one file per area
 scripts/windows/         Generate.bat, Build.bat, Test.bat
 scripts/linux/           Generate.sh, Build.sh, Test.sh
@@ -68,10 +70,11 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 - **Reason codes, not strings**: disconnect and reject reasons are enums; the game owns the text players read.
 - **Bytes** (`Bytes.h`): `ByteWriter`/`ByteReader`, little-endian, wire-identical to Headstone's (a golden-bytes test pins it; never change an encoding without a protocol bump). Quantizers: `Coord` (centimetres in an `int16`, ±327 m), `Angle16`/`Angle8` (wrapped to [0, 360)), `Unit8` (0–1); NaN encodes as 0. A reader fails for good on the first short read and returns zeros from then on: check `Ok()` once after decoding. It holds a span, so the bytes must outlive it.
 - **Unreliable size cap**: `MAX_UNRELIABLE_BYTES = 1100` (Steam drops a whole fragmented unreliable message); `Send` logs an error and drops a larger one.
+- **Transports** (`Transport.h`): `Send(PeerId, std::span<const uint8_t>, Delivery)`, `Poll(packets, events)` once a frame (flushes, then appends arrivals and `PeerEvent`s), `Disconnect`, `Close`, `Describe`, public `BytesIn`/`BytesOut`. A disconnect is a `DisconnectReason` (`Closed`, `TimedOut`, `Refused`, `Reset`, `ConnectFailed`, `Error`) plus a `Detail` string for logs only; a peer we `Disconnect` raises no event on our side, and what we sent before it still arrives. `TcpTransport::Listen/Connect(address, port, error, TcpParams)` (IPv4; port 0 picks one, `GetPort()`; caps 64 KB frame, 4 MB send queue checked after each flush, 16 live connections (lingering ones don't count), 256 KB read per connection per `Poll` so a flooding peer can't stall a frame, 5 s connect, 2 s close linger): frames are a 4-byte little-endian length + payload, wire-compatible with Headstone; a reliable packet over the frame cap is logged and dropped at the sender, a bigger incoming frame or a full send queue drops the peer (`Error`). A connect that fails at once still reports through `Poll`. **Read before send** in `Poll` on both OSes (a send to a peer that has closed brings back a reset, and Windows then discards unread data, a parting `Bye` with it); `Disconnect` keeps flushing the whole queue in later `Poll`s, shuts our side only once it is empty, then drains until their FIN (all within `CloseLinger`); `Close` flushes for at most 0.25 s (`WaitWritable`), then hangs up. Every socket call goes through `src/Platform/Socket.h`; sockets are never inherited by child processes (`SOCK_CLOEXEC`/`accept4` on Linux, `FD_CLOEXEC` elsewhere, `WSA_FLAG_NO_HANDLE_INHERIT` + `SetHandleInformation` on Windows); Linux sends use `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where it exists), `EINTR` is retried, `WinSocket.cpp` refcounts `WSAStartup` under a mutex and carries `#pragma comment(lib, "ws2_32.lib")`, so a game linking the static lib names nothing extra. Non-blocking connects finish through `PollConnect` (`select` except-set on Windows, `poll` on POSIX, then `SO_ERROR`). `LoopbackTransport::Listen()`/`Connect(host)` and `CreateLoopbackPair()`: in-process queues, many clients per host, delivered at the receiver's next `Poll`, never lost. `Conditioner(std::unique_ptr<Transport>, ConditionerParams)` wraps any transport: lag, jitter (reliable packets never overtake each other), loss of unreliable ones only, its own `mt19937` seeded by `Seed` (99), and an optional `Clock` hook (tests and a game's net clock); `Disconnect`/`Close` send what it holds first, and what it holds for a peer the inner transport reports lost is dropped (SteamIDs come back); `Dropped` counts losses.
 
 ## Tests
 
-`DingoNet-Tests` uses its own runner (`tests/TestFramework.h`): `TEST(name)` registers a case, `CHECK(cond)` records a failure with file and line, and `main` prints `PASS`/`FAIL` per case and a summary, exiting non-zero on any failure. Network tests run over the loopback transport, or over real sockets on `127.0.0.1`; a cross-OS check (a Windows host, a WSL2 client) closes each transport phase.
+`DingoNet-Tests` uses its own runner (`tests/TestFramework.h`): `TEST(name)` registers a case, `CHECK(cond)` records a failure with file and line, and `main` prints `PASS`/`FAIL` per case and a summary, exiting non-zero on any failure. Network tests run over the loopback transport (a `Conditioner` with a fake clock for lag), or over real sockets on `127.0.0.1` port 0, each poll loop capped by time (`TransportTestUtils.h`: `PumpUntil`, `LogCapture`); the whole run stays under ~3 s (2.4 s on Windows, where a refused connect waits out SYN retries). A cross-OS check closes each transport phase: `DingoNet-Tests --tcp-host=<ip>:<port>` on one machine, `--tcp-client=<ip>:<port>` on the other (`tests/NetCheck.cpp`, 200 echoed packets). From WSL2 in NAT mode a Windows host needs an inbound firewall rule on the `vEthernet (WSL (Hyper-V firewall))` interface (or mirrored networking); the reverse, a WSL2 host on `0.0.0.0` and a Windows client on `127.0.0.1`, needs nothing.
 
 ## Third-party vendors
 
@@ -79,7 +82,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 |---|---|
 | premake | Build generation (binaries only) |
 
-The core links only the OS: Winsock (`ws2_32`) on Windows from phase 3. Steam ships as source (`steam/`) that the game compiles against its own Steamworks SDK. v0.3 adds a reliable-UDP library (ENet proposed).
+The core links only the OS: Winsock (`ws2_32`, pulled in by `#pragma comment` in `WinSocket.cpp`) on Windows, libc on Linux. Steam ships as source (`steam/`) that the game compiles against its own Steamworks SDK. v0.3 adds a reliable-UDP library (ENet proposed).
 
 ## Docs & reviews
 
@@ -91,7 +94,7 @@ The core links only the OS: Winsock (`ws2_32`) on Windows from phase 3. Steam sh
 
 See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 
-- **v0.1 Extract** (in progress): phase 1 (repo skeleton, scripts) and phase 2 (bytes) done; next phase 3 (transports: Winsock + POSIX TCP, loopback, conditioner), then session, package + CI, and Headstone running on the package.
+- **v0.1 Extract** (in progress): phase 1 (repo skeleton, scripts), phase 2 (bytes) and phase 3 (transports: Winsock + POSIX TCP, loopback, conditioner) done; next phase 4 (session), then package + CI, and Headstone running on the package.
 - **v0.2 Structure**: message registry, session epoch, generic `Mirror<T>` interpolation.
 - **v0.3 UDP**: a reliable-UDP transport, LAN play without Steam.
 - **v0.4 Engine bridge**: `DingoNet-Engine`.

@@ -59,6 +59,14 @@ project "DingoNet"
 		"src"
 	}
 
+	filter "system:windows"
+		removefiles { "src/Platform/PosixSocket.cpp" }
+
+	filter "system:linux"
+		removefiles { "src/Platform/WinSocket.cpp" }
+
+	filter {}
+
 project "DingoNet-Tests"
 	kind "ConsoleApp"
 	location "tests"

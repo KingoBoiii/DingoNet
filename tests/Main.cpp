@@ -1,3 +1,4 @@
+#include "NetCheck.h"
 #include "TestFramework.h"
 
 #include <cstdio>
@@ -47,7 +48,15 @@ namespace TestFramework
 
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	for (int i = 1; i < argc; i++)
+	{
+		const int result = RunNetCheck(argv[i]);
+		if (result >= 0)
+		{
+			return result;
+		}
+	}
 	return TestFramework::RunAll();
 }
