@@ -91,6 +91,7 @@ namespace TransportTest
 		LogCapture()
 		{
 			s_Errors = 0;
+			s_Warnings = 0;
 			s_Last.clear();
 			Dingo::Net::SetLogHandler(&Handle);
 		}
@@ -104,6 +105,7 @@ namespace TransportTest
 		LogCapture& operator=(const LogCapture&) = delete;
 
 		int Errors() const { return s_Errors; }
+		int Warnings() const { return s_Warnings; }
 		const std::string& Last() const { return s_Last; }
 
 	private:
@@ -114,9 +116,14 @@ namespace TransportTest
 				s_Errors++;
 				s_Last = std::string(message);
 			}
+			else if (level == Dingo::Net::LogLevel::Warn)
+			{
+				s_Warnings++;
+			}
 		}
 
 		static inline int s_Errors = 0;
+		static inline int s_Warnings = 0;
 		static inline std::string s_Last;
 	};
 

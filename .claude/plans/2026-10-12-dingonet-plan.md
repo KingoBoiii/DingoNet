@@ -205,6 +205,50 @@ and would block it (and prompt). Deliberate differences:
 - Tests: handshake, full (MaxSlots + 1 clients), protocol and content mismatch, `SetAccepting(false)`,
   timeout via a frozen Conditioner, `Bye`, churn (join/leave 100×) — all over Loopback.
 
+**As built (2026-10-13)**: `Session.h`, `src/Session.cpp`, the wire in `src/SessionMessages.{h,cpp}`; 27 tests in
+`tests/SessionTests.cpp` (62 in all), passing on Windows and Linux, Debug and Release, adding about 0.2 s (time comes
+from `SessionParams::Clock`; one handshake, two game messages and a `Bye` go over TCP on 127.0.0.1). Wire, all
+little-endian: `Hello` F0 `u16 k_SessionProtocol, u16 Protocol, u32 ContentHash, str name, str build`; `Welcome` F1
+`u8 slot, u8 maxSlots, str hostName, u8 n, n × (u8 slot, str name)`; `Reject` F2 `u8 RejectReason, u16 session, u16
+protocol, u32 content, str build` (the host's); `Ping`/`Pong` F3/F4 `u32 ms`; `Bye` F5 `u8 LeaveReason` (`Bye` or
+`Kicked`); `SeatJoined` F6 `u8 slot, str name`; `SeatLeft` F7 `u8 slot, u8 LeaveReason`. Golden bytes pin `Hello`,
+`Welcome` and `Reject`. Deliberate differences from Headstone:
+- `Update()` takes no time: `steady_clock`, or the `Clock` hook (Headstone passed `WallSeconds()`). `HandshakeTimeout`
+  is its own setting; a client's runs from `StartClient` and restarts at the transport's `Connected` (Headstone's
+  started only at `Connected`, so a transport that never reported it relied on its own connect timeout).
+- Clients learn the roster: `Welcome` lists the other seated clients and the host sends `SeatJoined`/`SeatLeft`, so a
+  client gets `Joined`/`Left` for the other clients and `SlotTaken`/`NameOf`/`SeatedCount` are right on every machine
+  (Headstone's clients knew only seat 0 and their own, and learnt the rest from its `LobbyState`). Phase 6: Headstone's
+  `Joined`/`Left` handler takes them on clients too (its `HostBroadcastLobby` is host-only already; `m_Players.Join`
+  on a client is new).
+- `Kick(slot)` is new (sends `Bye(Kicked)`; `Left(Kicked)` on the host and the other clients, `Lost(Kicked)` on the
+  kicked one). `Bye` carries a reason byte; Headstone's was the bare id.
+- `Reject` carries a code and the host's versions and build instead of English text; `Detail` holds both sides'
+  versions for the log. A `Hello` whose session protocol differs is turned away (`ProtocolMismatch`) without
+  decoding the rest. `Lost` with `Slot` -1 is Headstone's "could not reach the host".
+- `NameFilter` runs on the session's own name and on every name a client receives (the host's, the roster), not only
+  on a `Hello`; Headstone sent its own name raw. `Welcome` carries the host's `MaxSlots`: a client adopts a smaller
+  count and turns a larger one away (`Rejected(ProtocolMismatch)`, then a `Bye`), so no slot past its own arrays.
+  Roster joins carry `Event::Existing`; `Event::Transport` holds the transport's `DisconnectReason` on `TransportLost`.
+- Decoding is strict (trailing bytes fail too) and every malformed, wrong-side or unknown session packet is logged as
+  a warning and dropped (Headstone dropped silently, and an unknown id ≥ 64 reached the game as a game message).
+  A slot outside the seats, a duplicate roster slot or a `Welcome` for slot 0 is malformed. A pong timestamp from the
+  future is ignored; the smoothed RTT starts from its first sample even when that is 0 ms.
+- A game `Send`/`Broadcast` whose first byte is in `0xF0–0xFF` logs an error and is dropped.
+- `SetParams` is refused while active (`SetProtocol` still works at any time, for `--net-proto`); the destructor
+  calls `Stop()`; `PeerCount()`, `MaxSlots()`, `IsAccepting()` and `GetParams()` are new.
+- After an Opus review (11 findings, all fixed): the transport's events run in order per id (a disconnect followed
+  by a connect of the same id, a SteamID back, drops the old peer before the new one's packets; a plain disconnect
+  still waits for the packets), and a packet from an untracked peer makes the host `Disconnect` it; a slot's queued
+  game messages are dropped with its `Left`, so none reaches the next occupant; bad session packets warn once per
+  peer, problem and id, and a host hangs up (`Bye(Kicked)`) after 32; a peer's build is cut to 64 printable ASCII
+  before it reaches `Detail`; `PingInterval` is clamped to `Timeout / 2`; `Describe` lists only measured round
+  trips; `SessionParams::UnseatedPacket` lets a host answer a game-range packet from an unseated connection (an
+  older wire's Hello) with a raw reply before hanging up, where otherwise that client only times out. A `Bye` from an
+  unseated peer is ignored (the handshake timeout or the transport's disconnect clears it).
+- The timeout tests freeze one side with the clock hook instead of a frozen `Conditioner`: a `Conditioner` releases
+  what it holds when its owner hangs up, so the side that times out second always reads that as `TransportLost`.
+
 ### Phase 5 — package and CI
 - `scripts/windows/Package.bat`: builds each config, merges nothing (no vendor libs), zips
   `DingoNet-<ver>.<build>-<Config>-windows-x86_64.zip` with `DingoNet.lib`, `.pdb`, `include/`,
@@ -216,6 +260,18 @@ and would block it (and prompt). Deliberate differences:
 - `.github/workflows/release.yml` on a `v*` tag, mirroring the engine's `build-release.yml`, with a
   Windows and an Ubuntu job.
 - `DingoNet-Tests` runs in CI on every push, on `windows-latest` and `ubuntu-latest`.
+
+**As built (2026-10-13)**: pushed as `257f93e`, Opus-reviewed (1 High, 2 Medium, 8 Low, all fixed);
+the first CI run passed all six jobs. Differences from the spec above:
+- Zips are `DingoNet-<MAJOR.MINOR.PATCH>.<build>-<Config>-<os>-x86_64.zip` (the engine's `<tag>.<commits>`
+  naming, so `fetch-dingonet.ps1` can mirror `fetch-engine.ps1`); no `.pdb` (`/Z7` embeds symbols).
+- `release.yml` also runs by hand (`workflow_dispatch`, `tag` input) and creates the release when it is
+  missing, since the owner creates engine releases by hand after tagging.
+- CI's Windows jobs build with v143 (`WINDOWS_TOOLSET`), like the engine's; built and warning-free
+  locally with VS 2022 in all three configs.
+- `SteamTransport::Create` takes a `log` callback and an `isAlive` hook (Headstone checked
+  `SteamManager::IsAvailable()`); close reasons map to `ConnectFailed` rather than `Refused`; send
+  results are checked; a peer we disconnected is ignored for 3 s instead of reappearing.
 
 ### Phase 6 — Headstone on DingoNet (Headstone repo)
 - `scripts/fetch-dingonet.ps1`, modelled on `fetch-engine.ps1`, with a `-Source <path>` switch that
