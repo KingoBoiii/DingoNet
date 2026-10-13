@@ -102,7 +102,7 @@ Headstone.
   engine package ships), x86_64, C++20, `staticruntime "Off"`, `toolset "v145"` on Windows (matches
   `Headstone/premake5.lua:24,88` so the game links both packages with one CRT); `premake5 gmake`
   with GCC ≥ 13 on Linux, outputs under `build/bin/<Config>-linux-x86_64/` like the engine's.
-- `Generate-Windows.bat` and `Generate-Linux.sh`, as in the engine.
+- `scripts/windows/{Generate,Build,Test}.bat` and `scripts/linux/{Generate,Build,Test}.sh` (2026-10-13: every script lives under `scripts/<platform>/`).
 - Projects: `DingoNet` (StaticLib, `include/DingoNet/`, `src/`) and `DingoNet-Tests` (ConsoleApp).
 - `.editorconfig` and a `CLAUDE.md` copied from DingoEngine's conventions (`CLAUDE.md:65-98`):
   `m_`/`s_` prefixes, UPPER_SNAKE constants, tabs, braces on new lines, load-bearing comments only.
@@ -154,9 +154,9 @@ Headstone.
   timeout via a frozen Conditioner, `Bye`, churn (join/leave 100×) — all over Loopback.
 
 ### Phase 5 — package and CI
-- `scripts/package.ps1`: builds each config, merges nothing (no vendor libs), zips
+- `scripts/windows/Package.bat`: builds each config, merges nothing (no vendor libs), zips
   `DingoNet-<ver>.<build>-<Config>-windows-x86_64.zip` with `DingoNet.lib`, `.pdb`, `include/`,
-  `steam/`, `VERSION.txt`; `scripts/package.sh` does the same on Linux into
+  `steam/`, `VERSION.txt`; `scripts/linux/Package.sh` does the same on Linux into
   `DingoNet-<ver>.<build>-<Config>-linux-x86_64.zip` with `libDingoNet.a`.
 - **Steam ships as source** in `steam/SteamTransport.{h,cpp}`: the game compiles it against its own
   Steamworks SDK. The package and its CI need no Steam SDK, and a non-Steam game ignores the folder.

@@ -13,23 +13,15 @@ v0.1 (Extract) is in progress. The repo skeleton (build, logging, versioning, te
 
 ## Build
 
-Windows:
+Each platform has the same three scripts, runnable from any directory, with an optional configuration (`Debug` by default, `Release`, `Distribution`):
 
-```
-vendor\premake\bin\premake5.exe vs2026
-msbuild DingoNet.slnx /p:Configuration=Debug /p:Platform=x64 /m
-build\bin\Debug-windows-x86_64\DingoNet-Tests\DingoNet-Tests.exe
-```
+| Script | Windows | Linux |
+|---|---|---|
+| Generate project files | `scripts\windows\Generate.bat` | `scripts/linux/Generate.sh` |
+| Build | `scripts\windows\Build.bat Release` | `scripts/linux/Build.sh Release` |
+| Build and run the tests | `scripts\windows\Test.bat` | `scripts/linux/Test.sh` |
 
-Linux:
-
-```
-./Generate-Linux.sh
-make -j"$(nproc)" config=debug
-./build/bin/Debug-linux-x86_64/DingoNet-Tests/DingoNet-Tests
-```
-
-Configurations: `Debug`, `Release`, `Distribution`.
+Windows needs Visual Studio with the C++ workload (toolset v145); Linux needs GCC 13 or newer and `make`.
 
 ## License
 

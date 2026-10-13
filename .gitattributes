@@ -2,6 +2,9 @@
 # Set default behavior to automatically normalize line endings.
 ###############################################################################
 * text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+vendor/premake/bin/premake5 binary
 
 ###############################################################################
 # Set default behavior for command prompt diff.
