@@ -119,6 +119,18 @@ Headstone.
 - Tests: round-trip every primitive and quantizer at their edges; a truncated read sets the fail
   flag and returns zeros.
 
+**As built (2026-10-13)**: `Bytes.h`/`Bytes.cpp`, 10 tests in `tests/BytesTests.cpp`, Opus-reviewed
+(no code findings; its test and lifetime suggestions applied). Byte-identical to Headstone for every
+input where Headstone's output was defined, pinned by a golden-bytes test of the rounding and wrap
+boundaries. Deliberate differences:
+- NaN encodes as 0 in `Coord`/`Unit8`, NaN and ±inf as 0 in the angles; ±inf `Coord`/`Unit8` clamp.
+- `Coord` clamps before rounding: the same bytes for every value Headstone could round, and the
+  clamped value (not `lround` overflow, unspecified, `LONG_MIN` on MSVC past ±21,474,836 m) beyond.
+- `U32`/`U64` check every byte first, so a truncated read returns 0 (Headstone returned the low half).
+- The reader holds a `std::span`; constructing one from a temporary vector (const or not) is deleted.
+  A span or pointer to a temporary still dangles, as in Headstone.
+- `PeekU8(std::span)` returns 0 for an empty packet; `ByteWriter::Clear()` added.
+
 ### Phase 3 — transports
 - `Transport.h` as today, plus:
   - `PeerEvent::Reason` becomes `DisconnectReason` (`Closed`, `TimedOut`, `Refused`, `Reset`,

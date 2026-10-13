@@ -66,6 +66,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 - **No threads**: transports and sessions are pumped once a frame by the game (Headstone's model). Nothing in the core starts a thread.
 - **Library version ≠ wire version**: the session handshake carries `k_SessionProtocol` (bumped only when DingoNet's own session messages change) beside the game's protocol number and a game-supplied content hash. A patch release never changes the wire.
 - **Reason codes, not strings**: disconnect and reject reasons are enums; the game owns the text players read.
+- **Bytes** (`Bytes.h`): `ByteWriter`/`ByteReader`, little-endian, wire-identical to Headstone's (a golden-bytes test pins it; never change an encoding without a protocol bump). Quantizers: `Coord` (centimetres in an `int16`, ±327 m), `Angle16`/`Angle8` (wrapped to [0, 360)), `Unit8` (0–1); NaN encodes as 0. A reader fails for good on the first short read and returns zeros from then on: check `Ok()` once after decoding. It holds a span, so the bytes must outlive it.
 - **Unreliable size cap**: `MAX_UNRELIABLE_BYTES = 1100` (Steam drops a whole fragmented unreliable message); `Send` logs an error and drops a larger one.
 
 ## Tests
@@ -90,7 +91,7 @@ The core links only the OS: Winsock (`ws2_32`) on Windows from phase 3. Steam sh
 
 See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 
-- **v0.1 Extract** (in progress): phase 1 (repo skeleton, scripts) done; next phase 2 (bytes), then transports, session, package + CI, and Headstone running on the package.
+- **v0.1 Extract** (in progress): phase 1 (repo skeleton, scripts) and phase 2 (bytes) done; next phase 3 (transports: Winsock + POSIX TCP, loopback, conditioner), then session, package + CI, and Headstone running on the package.
 - **v0.2 Structure**: message registry, session epoch, generic `Mirror<T>` interpolation.
 - **v0.3 UDP**: a reliable-UDP transport, LAN play without Steam.
 - **v0.4 Engine bridge**: `DingoNet-Engine`.
