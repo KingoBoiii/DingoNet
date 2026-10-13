@@ -271,7 +271,7 @@ the first CI run passed all six jobs. Differences from the spec above:
   locally with VS 2022 in all three configs.
 - `SteamTransport::Create` takes a `log` callback and an `isAlive` hook (Headstone checked
   `SteamManager::IsAvailable()`); close reasons map to `ConnectFailed` rather than `Refused`; send
-  results are checked; a peer we disconnected is ignored for 3 s instead of reappearing.
+  results are checked; a peer we disconnected is ignored for 1 s instead of reappearing (3 s at first; the phase 6 review showed it swallowed a quick rejoin).
 
 ### Phase 6 — Headstone on DingoNet (Headstone repo)
 - `scripts/fetch-dingonet.ps1`, modelled on `fetch-engine.ps1`, with a `-Source <path>` switch that

@@ -214,7 +214,7 @@ namespace Dingo::Net
 		// The Steam session is left to idle out: closing it now could drop a parting Bye still on its way.
 		if (!m_Impl) return;
 		m_Impl->Peers.erase(peer);
-		m_Impl->Recent[peer] = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		m_Impl->Recent[peer] = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 	}
 
 	void SteamTransport::Close()

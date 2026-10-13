@@ -85,7 +85,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 |---|---|
 | premake | Build generation (binaries only) |
 
-The core links only the OS: Winsock (`ws2_32`, pulled in by `#pragma comment` in `WinSocket.cpp`) on Windows, libc on Linux. Steam ships as source (`steam/`) that the game compiles against its own Steamworks SDK: `SteamTransport::Create(ISteamNetworkingMessages*, host, allowed, log, isAlive)` on channel 0, with the stale-queue drain on create; `log` is a callback because the package exposes no log function, and `isAlive` (or destroying it before `SteamAPI_Shutdown()`) keeps `Close` off a dead interface. Remote, local and connectivity failures are `ConnectFailed` (Steam has no explicit deny, so nothing is `Refused`), a disconnected peer's messages are dropped for 3 s, and failed sends are logged. v0.3 adds a reliable-UDP library (ENet proposed).
+The core links only the OS: Winsock (`ws2_32`, pulled in by `#pragma comment` in `WinSocket.cpp`) on Windows, libc on Linux. Steam ships as source (`steam/`) that the game compiles against its own Steamworks SDK: `SteamTransport::Create(ISteamNetworkingMessages*, host, allowed, log, isAlive)` on channel 0, with the stale-queue drain on create; `log` is a callback because the package exposes no log function, and `isAlive` (or destroying it before `SteamAPI_Shutdown()`) keeps `Close` off a dead interface. Remote, local and connectivity failures are `ConnectFailed` (Steam has no explicit deny, so nothing is `Refused`), a disconnected peer's messages are dropped for 1 s (long enough for in-flight packets; longer would swallow a quick rejoin's Hello), and failed sends are logged. v0.3 adds a reliable-UDP library (ENet proposed).
 
 ## Docs & reviews
 
