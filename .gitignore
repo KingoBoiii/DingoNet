@@ -1,0 +1,12 @@
+/build/
+.vs/
+.vscode/
+*.sln
+*.slnx
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+/Makefile
+/*.make
+/tests/Makefile
+/tests/*.make
