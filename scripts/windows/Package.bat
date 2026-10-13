@@ -80,6 +80,8 @@ exit /b 0
 :restore
 if defined RESTORE (
 	copy /y build\package\BuildInfo.h.bak include\DingoNet\BuildInfo.h >nul
+	rem copy keeps the backup's old timestamp, which would leave objects built from the stamped header looking current.
+	copy /b include\DingoNet\BuildInfo.h +,, include\DingoNet\BuildInfo.h >nul
 	del build\package\BuildInfo.h.bak
 	set RESTORE=
 )
