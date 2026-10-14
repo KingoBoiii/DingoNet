@@ -265,7 +265,7 @@ protocol, u32 content, str build` (the host's); `Ping`/`Pong` F3/F4 `u32 ms`; `B
 the first CI run passed all six jobs. Differences from the spec above:
 - Zips are `DingoNet-<MAJOR.MINOR.PATCH>.<build>-<Config>-<os>-x86_64.zip` (the engine's `<tag>.<commits>`
   naming, so `fetch-dingonet.ps1` can mirror `fetch-engine.ps1`); no `.pdb` (`/Z7` embeds symbols).
-- `release.yml` also runs by hand (`workflow_dispatch`, `tag` input) and creates the release when it is
+- `release.yml` runs when a release is published (changed from a `v*` tag push on 2026-10-14), and by hand (`workflow_dispatch`, `tag` input), creating the release when it is
   missing, since the owner creates engine releases by hand after tagging.
 - CI's Windows jobs build with v143 (`WINDOWS_TOOLSET`), like the engine's; built and warning-free
   locally with VS 2022 in all three configs.
