@@ -468,7 +468,7 @@ double t)` (found by ADL) and, for extrapolation, `Extrapolate(const T& a, const
   samples, `Settle`, due events, and a jittered 20 Hz feed whose rendered path never steps more than
   a set bound. That last one is the same check as Headstone's `ProbeMirrorSmoothness`.
 
-**As built** (2026-10-22): `include/DingoNet/Mirror.h`, `tests/MirrorTests.cpp` (30 tests after the review fixes; suite 143).
+**As built** (2026-10-22): `include/DingoNet/Mirror.h`, `tests/MirrorTests.cpp` (30 tests after the review fixes; suite 144).
 - `Timeline<T>` holds the stepped values only; timed events are `EventQueue<E>` (`Schedule`, `TakeDue`).
 - `RenderClockParams`: `Delay` 0.1, `MaxSlew` 0.1, `CatchUp` 0.25, `SnapError` 0.5, `MaxDt` 0.25. `TracksParams`: `MaxExtrapolate` 0.15, `Stale` 2.0, `History` 1.0, `MinExtrapolateGap` 0.001.
 - `RenderClock`: `OnSnapshot`, `Advance(dt)` (dt clamped), `HostNow`, `RenderTime`, `LatestStamp`, `HasTime`, `Settle`, `Reset`, `Restarts`. `HostNow` is an estimate that jumps up to a newer stamp and eases down at most `MaxSlew`; render time slews at `1 ± MaxSlew`, snaps forward past `SnapError`, and holds (rate 0) when ahead of its target by more than the slew band, `MaxSlew * CatchUp` (0.025 s). It goes back only on a rewind (ahead of its target by more than `RewindError`) and on a restart (stamp more than `RestartError` behind the latest); `HostNow` still resyncs down to a newer stamp more than `SnapError` behind it, so while held (or after a resync) render time can be ahead of `HostNow`. `Settle` holds `HostNow` at the latest stamp, and render moves forward to it or holds, never back, until a newer stamp. No gap-length threshold: the clock runs through gaps.
