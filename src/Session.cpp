@@ -513,27 +513,31 @@ namespace Dingo::Net
 
 	void Session::OnHello(Peer& peer, std::span<const uint8_t> data)
 	{
-		if (!m_IsHost || peer.Slot >= 0)
+		if (!m_IsHost)
 		{
 			Bad(peer, Problem::Unexpected, data[0]);
 			return;
 		}
 		uint16_t sessionProtocol = 0;
-		if (!DecodeHelloSessionProtocol(data, sessionProtocol))
+		HelloMessage hello;
+		if (!DecodeHelloSessionProtocol(data, sessionProtocol) || (sessionProtocol == k_SessionProtocol && !Decode(data, hello)))
 		{
 			Bad(peer, Problem::Malformed, data[0]);
 			return;
+		}
+		if (peer.Slot >= 0)
+		{
+			// A Steam peer whose session ended without a Bye (a crash, or it timed us out) comes back under
+			// the same id while we still hold its seat: that seat is gone, and this is a new join.
+			const int old = peer.Slot;
+			peer.Slot = -1;
+			peer.ConnectedAt = m_Now;
+			VacateSeat(old, LeaveReason::TransportLost, "rejoined on the same connection", DisconnectReason::Reset);
 		}
 		if (sessionProtocol != k_SessionProtocol)
 		{
 			RejectPeer(peer.Id, RejectReason::ProtocolMismatch, {},
 				std::format("theirs: session {}; ours: session {}", sessionProtocol, k_SessionProtocol));
-			return;
-		}
-		HelloMessage hello;
-		if (!Decode(data, hello))
-		{
-			Bad(peer, Problem::Malformed, data[0]);
 			return;
 		}
 
@@ -742,10 +746,14 @@ namespace Dingo::Net
 			m_Transport->Disconnect(id);
 		}
 		std::erase_if(m_Peers, [id](const Peer& p) { return p.Id == id; });
-		if (slot < 0)
+		if (slot >= 0)
 		{
-			return;
+			VacateSeat(slot, reason, std::move(detail), transport);
 		}
+	}
+
+	void Session::VacateSeat(int slot, LeaveReason reason, std::string detail, DisconnectReason transport)
+	{
 		std::erase_if(m_Messages, [slot](const Message& m) { return m.Slot == slot; });
 		std::string name = std::move(m_Seats[slot].Name);
 		m_Seats[slot] = {};

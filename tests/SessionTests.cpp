@@ -628,7 +628,7 @@ TEST(SessionHostSurvivesMalformedPacketsFromAClient)
 	host.Clear();
 
 	SendAll(*raw, toHost, {
-		Hello(k_SessionProtocol, PROTOCOL, CONTENT, "Zed"), { 0xF4, 0xFF, 0xFF, 0xFF, 0xFF }, { 0xF5, 9 },
+		{ 0xF4, 0xFF, 0xFF, 0xFF, 0xFF }, { 0xF5, 9 },
 		{ 0xF5, static_cast<uint8_t>(LeaveReason::TransportLost) }, { 0x05, 9 } });
 	lan.Pump(1);
 	CHECK(host.Events.empty());
@@ -1092,6 +1092,70 @@ TEST(SessionClientTheHostTimedOutLearnsItOverASilentTransport)
 		CHECK(steps <= (byeLost ? 56 : 1));
 		CHECK(host.S.SeatedCount() == 1);
 	}
+}
+
+TEST(SessionReseatsAClientThatRejoinsUnderTheSameId)
+{
+	FakeClock clock;
+	SteamWire wire;
+	Node host(MakeParams(&clock));
+	Node a(MakeParams(&clock));
+	host.S.StartHost(std::make_unique<FakeSteam>(wire, true, clock), "Host");
+	a.S.StartClient(std::make_unique<FakeSteam>(wire, false, clock), "Ann");
+	auto step = [&](bool runHost)
+	{
+		clock.Advance(std::chrono::milliseconds(100));
+		if (runHost)
+		{
+			host.Update();
+		}
+		a.Update();
+	};
+	for (int i = 0; i < 10; i++)
+	{
+		step(true);
+	}
+	CHECK(a.S.Connected() && host.S.SeatedCount() == 2);
+	host.Clear();
+
+	for (int i = 0; i < 60 && a.S.Active(); i++)
+	{
+		step(false);
+	}
+	CHECK(a.Find(Kind::Lost) && a.Find(Kind::Lost)->Leave == LeaveReason::TimedOut);
+	a.Clear();
+	a.S.StartClient(std::make_unique<FakeSteam>(wire, false, clock), "Ann");
+	step(false);
+	step(true);
+	step(true);
+
+	CHECK(a.Find(Kind::Welcomed, 1) && a.S.Connected());
+	CHECK(host.Events.size() == 2);
+	CHECK(host.Events.size() == 2 && host.Events[0].Type == Kind::Left && host.Events[0].Slot == 1
+		&& host.Events[0].Leave == LeaveReason::TransportLost && host.Events[0].Transport == DisconnectReason::Reset);
+	CHECK(host.Events.size() == 2 && host.Events[1].Type == Kind::Joined && host.Events[1].Slot == 1 && host.Events[1].Name == "Ann");
+	CHECK(host.S.SeatedCount() == 2 && host.S.PeerCount() == 1);
+
+	for (int i = 0; i < 100; i++)
+	{
+		step(true);
+	}
+	CHECK(a.S.Connected() && a.Count(Kind::Lost) == 0 && host.Count(Kind::Left) == 1);
+}
+
+TEST(SessionFreesTheSeatOfAPeerWhoseNewHelloIsTurnedAway)
+{
+	Node host(MakeParams(nullptr));
+	std::shared_ptr<Script> script = HostWithAnn(host);
+	host.Clear();
+
+	script->Packets.push_back({ 7, Hello(k_SessionProtocol, PROTOCOL + 1, CONTENT, "Ann") });
+	host.Update();
+	CHECK(host.Events.size() == 2);
+	CHECK(host.Events.size() == 2 && host.Events[0].Type == Kind::Left && host.Events[0].Slot == 1 && host.Events[1].Type == Kind::Rejected
+		&& host.Events[1].Rejection == RejectReason::ProtocolMismatch);
+	CHECK(host.S.SeatedCount() == 1 && host.S.PeerCount() == 0);
+	CHECK(script->DisconnectsOf(7) == 1);
 }
 
 TEST(SessionNeverHandsALeaversMessagesToTheNextOccupant)

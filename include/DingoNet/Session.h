@@ -216,6 +216,7 @@ namespace Dingo::Net
 
 		void RejectPeer(PeerId id, RejectReason reason, std::string name, std::string detail);
 		void DropPeer(PeerId id, LeaveReason reason, std::string detail = {}, DisconnectReason transport = DisconnectReason::Closed);
+		void VacateSeat(int slot, LeaveReason reason, std::string detail, DisconnectReason transport);
 		void Lose(LeaveReason reason, std::string detail = {}, DisconnectReason transport = DisconnectReason::Closed);
 		void SendToSeated(std::span<const uint8_t> data, int exceptSlot);
 
