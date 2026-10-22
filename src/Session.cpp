@@ -418,9 +418,13 @@ namespace Dingo::Net
 				{
 					LogInfo("session: dropped peer {}: no Hello within {} s", id, m_Params.HandshakeTimeout);
 				}
-				// A transport whose Disconnect is silent on the wire (Steam) would otherwise leave the peer
-				// thinking it is still in.
-				m_Transport->Send(id, EncodeBye(LeaveReason::TimedOut), Delivery::Reliable);
+				else
+				{
+					// A transport whose Disconnect is silent on the wire (Steam) would otherwise leave the peer
+					// thinking it is still in. An unseated one gets nothing: a v0.1.0 client we timed out comes back
+					// unseated, and each Bye would count as hearing from us.
+					m_Transport->Send(id, EncodeBye(LeaveReason::TimedOut), Delivery::Reliable);
+				}
 				DropPeer(id, LeaveReason::TimedOut, std::format("silent for over {} s", m_Params.Timeout));
 			}
 		}

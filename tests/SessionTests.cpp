@@ -1381,3 +1381,27 @@ TEST(SessionIdleConnectionsCannotLockJoinersOut)
 	CHECK(a.Find(Kind::Welcomed, 1) && a.S.Connected());
 	CHECK(host.S.SeatedCount() == 2 && host.S.PeerCount() <= 17);
 }
+
+TEST(SessionSaysByeOnlyToTheSeatedPeersItTimesOut)
+{
+	FakeClock clock;
+	SessionParams params = MakeParams(&clock);
+	params.Timeout = 10.0;
+	params.HandshakeTimeout = 5.0;
+	Node host(params);
+	std::shared_ptr<Script> script = HostWithAnn(host);
+	script->Events.push_back(Connect(8));
+	host.Update();
+	CHECK(host.S.PeerCount() == 2);
+
+	const Bytes timedOut = { 0xF5, static_cast<uint8_t>(LeaveReason::TimedOut) };
+	clock.Advance(std::chrono::milliseconds(5100));
+	host.Update();
+	CHECK(script->DisconnectsOf(8) == 1 && host.S.PeerCount() == 1);
+	CHECK(!script->SentTo(8, timedOut));
+
+	clock.Advance(std::chrono::milliseconds(5000));
+	host.Update();
+	CHECK(host.Find(Kind::Left, 1) && host.Find(Kind::Left, 1)->Leave == LeaveReason::TimedOut);
+	CHECK(script->SentTo(7, timedOut) && script->DisconnectsOf(7) == 1);
+}
