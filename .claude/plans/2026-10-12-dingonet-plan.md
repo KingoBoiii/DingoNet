@@ -399,6 +399,13 @@ v0.1's API keeps compiling; only the epoch changes the wire.
   - duplicate and reserved ids;
   - counters.
 
+**As built (2026-10-22)**: `Messages.h`, `src/Messages.cpp`; 93 tests in all, 18 of them new in `tests/MessageTests.cpp`. No wire change (`k_SessionProtocol` stays 1).
+- A `NetMessage` concept (default-constructible; `Id` an integer or enum 0-255, static_asserted; `Dir`, `Send`, `Write`, `Read`; optional `Name`, else the hex id in logs). `Encode(msg)` returns `std::optional<std::vector<uint8_t>>`: `nullopt` plus an error naming the message for an oversize unreliable one or a reserved id.
+- `MessageRouter`: `On<T>(handler)` (false plus an error for a duplicate or reserved id), `Dispatch(slot, data, isHost)` (true if a handler ran; unknown id, empty data, wrong side, short read or trailing bytes are dropped), `NoteSent<T>(bytes)`, `Stats(id)`, `Registered`, `KnownIds` (handler or sent), `NameOf`, `DroppedUnknown`, `ResetStats`. The 256-entry table is on the heap, allocated once, so a handler may call `On` and `Dispatch`; the router is not copyable or movable.
+- `Session::SetRouter(MessageRouter*)` (not owned, null = none), typed `Send(slot, msg)` / `Broadcast(msg, exceptSlot)` in the message's delivery. A host sending a `ToHost` message or a client a `ToClients` one logs an error and drops it. The span `Send` now returns `bool` and `Broadcast` an `int` (seats reached); callers ignoring them compile as before.
+- Counters: `Received`/`BytesIn` only when a handler ran; bytes include the id byte; `Sent`/`BytesOut` only for a packet handed to the transport, one send per `Broadcast` that reached a seat; direction and malformed drops per id; there is no router `Encode`.
+- Beyond the plan: `SetRouter` (counters need the router in the send path); the reserved-id refusal is a runtime error, not a `static_assert`, so it stays testable; `FIRST_SESSION_MESSAGE`/`IsSessionMessage` moved from `Session.h` to `Messages.h`; handlers must be copyable (stored in a `std::function`).
+
 ### Phase 2 — session epoch (~3 h, Opus; wire change)
 
 - The host calls `Session::BeginEpoch()` at every state change where old packets must die: run start,
@@ -426,8 +433,22 @@ v0.1's API keeps compiling; only the epoch changes the wire.
   - a new-epoch packet that beats its `Epoch` message is dropped;
   - queued messages are cleared;
   - the `u8` wraps;
-  - with `Epochs = false` the wire and behaviour are exactly v0.1's;
+  - with `Epochs = false` the game-message bytes on the wire are exactly v0.1's (`Welcome` and `SeatLeft` changed under protocol 2, and `Send` now refuses an oversize unreliable packet and returns whether it was sent);
   - a v0.1 peer gets `ProtocolMismatch`.
+
+**As built (2026-10-22)**: `Session.h`, `Session.cpp`, `SessionMessages.{h,cpp}`; 17 new tests (`tests/EpochTests.cpp` 13, `SessionTests.cpp` 4), 110 in all, Debug and Release on Linux.
+- Wire, `k_SessionProtocol` 2 (Hello and Reject layouts unchanged):
+  - `Welcome` = `F1 slot maxSlots epochsOn(0|1) epoch hostName n (slot name)*`
+  - `SeatLeft` = `F7 slot LeaveReason DisconnectReason`; the transport byte must be `Closed` unless the leave is `TransportLost`, else malformed (the host sends it that way)
+  - `Epoch` = `F8 epoch`; `Stamped` = `F9 epoch game...` (game bytes non-empty)
+- The host's `Epochs` rules: a client adopts the flag and epoch from the `Welcome`; its own param is only a hint for `MaxUnreliablePayload()` until then. A client never stamps or accepts a stamp before it is welcomed.
+- `BeginEpoch()`: host with `Epochs` only, else a warning and nothing; bumps the `u8` (wraps), sends `Epoch` reliably to every seat, drops the `TakeMessages` queue and the `LastMessages` of `Left` events not yet taken. A client's `Epoch` does the same and raises `EpochChanged` (`Event::Epoch`). `GetEpoch()`, `EpochsOn()`, `StaleDropped()` (debug counter).
+- Stale stamps (older or not yet announced) are dropped silently, counted in `StaleDropped()`, never toward the 32-bad hang-up. An unstamped game packet from a seated peer with epochs on, a `Stamped` shorter than 3 bytes or carrying a session id, and a `Stamped`/`Epoch` where epochs are off are malformed/unexpected (warned once per peer and id as `0xF9`/`0xF8`). A `Stamped` from an unseated host peer is unexpected (older wires never stamp); its raw packets still reach `UnseatedPacket`.
+- `MaxUnreliablePayload()` = 1098 with epochs on, else 1100. The session now checks the unreliable limit itself in both modes: an oversize span `Send` returns false (the transport used to drop it silently); typed sends name the message and count nothing. An empty packet is refused (error) with epochs on; with epochs off the wire is v0.1's, byte for byte.
+- Compatibility tests: a v0.1 Hello (protocol 1) at a v0.2 host gets `Reject(ProtocolMismatch)` and a hang-up (no `Bye`, as in v0.1); a v0.2 client given a hand-written v0.1 `Reject` raises `Rejected(ProtocolMismatch)` at once. A v0.1 host compares Hello's leading session protocol first and rejects a protocol-2 Hello the same way.
+- Source compatibility, the one note: `Event::Kind::EpochChanged` is new, so a v0.1 game's exhaustive `switch` over `Event::Kind` fails under `-Wswitch` with `-Werror` (GCC, clang; MSVC's C4061/C4062 are off by default) until it adds a case or a `default`.
+- Contract (v0.2 review F1, F2, F3): `BeginEpoch()` first, then the new state's messages (a message sent before it may be dropped); events before messages each frame (`TakeEvents`, then `TakeMessages`); `MaxUnreliablePayload()` follows `Params.Epochs` before the session starts.
+- Beyond the plan: the stale counter, `EpochsOn()`, the 0xF9/0xF8 warning ids, the strict `SeatLeft` combination, the empty-packet refusal. Whether a same-SteamID rejoiner's old traffic dies is the game's call (`BeginEpoch`).
 
 ### Phase 3 — the mirror toolkit (~3 h, Opus)
 
@@ -446,6 +467,14 @@ double t)` (found by ADL) and, for extrapolation, `Extrapolate(const T& a, const
 - Tests: interpolation between samples, the extrapolation cap, stale forget, trim, out-of-order
   samples, `Settle`, due events, and a jittered 20 Hz feed whose rendered path never steps more than
   a set bound. That last one is the same check as Headstone's `ProbeMirrorSmoothness`.
+
+**As built** (2026-10-22): `include/DingoNet/Mirror.h`, `tests/MirrorTests.cpp` (30 tests after the review fixes; suite 144).
+- `Timeline<T>` holds the stepped values only; timed events are `EventQueue<E>` (`Schedule`, `TakeDue`).
+- `RenderClockParams`: `Delay` 0.1, `MaxSlew` 0.1, `CatchUp` 0.25, `SnapError` 0.5, `MaxDt` 0.25. `TracksParams`: `MaxExtrapolate` 0.15, `Stale` 2.0, `History` 1.0, `MinExtrapolateGap` 0.001.
+- `RenderClock`: `OnSnapshot`, `Advance(dt)` (dt clamped), `HostNow`, `RenderTime`, `LatestStamp`, `HasTime`, `Settle`, `Reset`, `Restarts`. `HostNow` is an estimate that jumps up to a newer stamp and eases down at most `MaxSlew`; render time slews at `1 ± MaxSlew`, snaps forward past `SnapError`, and holds (rate 0) when ahead of its target by more than the slew band, `MaxSlew * CatchUp` (0.025 s). It goes back only on a rewind (ahead of its target by more than `RewindError`) and on a restart (stamp more than `RestartError` behind the latest); `HostNow` still resyncs down to a newer stamp more than `SnapError` behind it, so while held (or after a resync) render time can be ahead of `HostNow`. `Settle` holds `HostNow` at the latest stamp, and render moves forward to it or holds, never back, until a newer stamp. No gap-length threshold: the clock runs through gaps.
+- `Tracks<Key, T, Hash>` and `Timeline` trim explicitly (`Trim(renderTime)`); `Keys()` plus `ForEach`; `Extrapolates` constant; `Interpolate`/`Extrapolate` by ADL with `double` overloads; no `Extrapolate` or no earlier sample `MinExtrapolateGap` back means hold.
+- Review fixes (v0.2 review F4, F5): `RenderClockParams` gains `RewindError` 2.0 and `RestartError` 2.0. Render time goes back only on a restart (stamp more than `RestartError` behind the latest) or when ahead of its target by more than `RewindError`; a smaller overshoot holds it (rate 0) until the target catches up, and `OnSnapshot` no longer moves it. `Settle()` never moves it back.
+- Eras are the game's job: clear Tracks, Timeline and EventQueue and `Reset()` the clock at an epoch change or run start.
 
 ### Phase 4 — release v0.2.0 (~1 h)
 

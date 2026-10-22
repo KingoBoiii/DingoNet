@@ -1,10 +1,10 @@
 # DingoNet
 
-A small cross-platform C++20 netcode library: byte serialization, transports (TCP, loopback, a network conditioner), and a configurable session layer. It is extracted from the Headstone co-op game and is meant to become an optional module for [DingoEngine](https://github.com/KingoBoiii/DingoEngine). The core library is engine-free and logs through a handler the game installs.
+A small cross-platform C++20 netcode library: byte serialization, transports (TCP, loopback, a network conditioner, Steam as source), a configurable session layer, a typed message registry, session epochs and snapshot interpolation. It is extracted from the Headstone co-op game and is meant to become an optional module for [DingoEngine](https://github.com/KingoBoiii/DingoEngine). The core library is engine-free and logs through a handler the game installs.
 
 ## Status
 
-v0.1 (Extract) is in progress. The repo skeleton (build, logging, versioning, test runner) is in place; bytes, transports and sessions come next. See `.claude/plans/2026-10-12-dingonet-plan.md`.
+v0.1 (Extract) is released (`v0.1.1`). v0.2 (Structure) adds `Messages.h` (typed messages and a `MessageRouter` with per-message stats), session epochs (`SessionParams::Epochs`, `BeginEpoch`; session protocol 2, so v0.2 and v0.1 sessions turn each other away) and `Mirror.h` (`RenderClock`, `Tracks`, `Timeline`, `EventQueue`). See `.claude/plans/2026-10-12-dingonet-plan.md`.
 
 ## Platforms
 
