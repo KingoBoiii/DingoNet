@@ -320,6 +320,17 @@ premake option, `--dingonet` (`HEADSTONE_DINGONET`): the default build keeps Hea
 and it worked as expected: the first run of the Steam transport, on both OSes, and of Windows↔Linux co-op.
 That passes both of Headstone's Phase 4 gates.
 
+**v0.1.1 (2026-10-22)**: the Opus review of the whole v0.1 diff (`.claude/reviews/2026-10-22-v0.1-review.md`:
+1 High, 2 Medium, 7 Low) fixed on `master`, one commit per finding, not yet tagged. Wire-compatible with
+v0.1.0 (`k_SessionProtocol` stays 1, golden bytes unchanged); the one API addition is
+`Session::Event::LastMessages`. Session: a host sends `Bye(TimedOut)` before every timeout drop and Pongs
+only seated peers (a Steam client it timed out no longer stays "connected" forever); a `Hello` from a seated
+peer frees the seat and joins fresh (a Steam rejoin under the same SteamID); a leaver's queued messages move
+onto its `Left`; a host keeps at most 16 connections waiting for a `Hello`. TCP's `MaxConnections` defaults
+to 64. `SteamTransport` makes no Steam call while `isAlive` is false and is inert after `Close`, tested by
+`DingoNet-SteamTests` (`--steam-sdk`, a fake `ISteamNetworkingMessages`). The Linux library is `-fPIC`; the
+`.bat` files pause only under Explorer. Tests: 62 → 71 on both OSes, plus 5 Steam tests.
+
 **Estimate**: phases 1–5 about a day and a half of agent time, Linux included; phase 6 about half a
 day plus the manual two-machine Steam check.
 
