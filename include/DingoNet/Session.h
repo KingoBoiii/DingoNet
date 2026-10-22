@@ -20,8 +20,10 @@ namespace Dingo::Net
 
 	// The session's own wire version: bumped only when its messages change. A game's Protocol and
 	// ContentHash ride beside it in the Hello.
-	inline constexpr uint16_t k_SessionProtocol = 1;
+	inline constexpr uint16_t k_SessionProtocol = 2;
 	inline constexpr int MAX_SESSION_SLOTS = 32;
+	// With epochs on, every game message carries this many bytes of stamp.
+	inline constexpr size_t EPOCH_STAMP_BYTES = 2;
 
 	enum class RejectReason : uint8_t
 	{
@@ -64,6 +66,10 @@ namespace Dingo::Net
 		// connection hung up. Without it a client of an older wire (a Hello under another id) only times out,
 		// so a game answers its own old Hello with its old reject here.
 		std::function<std::optional<std::vector<uint8_t>>(std::span<const uint8_t>)> UnseatedPacket;
+		// Host: game messages travel stamped with the session's epoch (see BeginEpoch), and a packet from another
+		// epoch is dropped on arrival. A client takes the host's setting from the Welcome, so its own is only a hint
+		// for MaxUnreliablePayload() until then.
+		bool Epochs = false;
 	};
 
 	// Who's who over a Transport: the handshake (Hello -> Welcome or Reject), seats (slot 0 is the host),
@@ -85,7 +91,9 @@ namespace Dingo::Net
 				// Client: turned away (Rejection); the session has stopped. Host: we turned Name away.
 				Rejected,
 				// Client: the host is gone (Leave); the session has stopped. Slot is -1 if we were never seated.
-				Lost
+				Lost,
+				// Client: the host began a new epoch (Epoch); the queued game messages were dropped.
+				EpochChanged
 			};
 
 			Kind Type = Kind::Joined;
@@ -93,8 +101,9 @@ namespace Dingo::Net
 			std::string Name;
 			RejectReason Rejection = RejectReason::ProtocolMismatch;
 			LeaveReason Leave = LeaveReason::Bye;
-			// Leave == TransportLost: what our own transport reported, so a host's Left and a client's Lost. A
-			// client's Left for another client always holds Closed: the host's SeatLeft carries no transport reason.
+			// Leave == TransportLost: what the transport that lost the peer reported: our own for a host's Left and a
+			// client's Lost, the host's for a client's Left for another client (it rides in SeatLeft). Closed for any
+			// other leave.
 			Dingo::Net::DisconnectReason Transport = Dingo::Net::DisconnectReason::Closed;
 			// Joined on a client: already seated when we were welcomed, not a new arrival.
 			bool Existing = false;
@@ -103,6 +112,8 @@ namespace Dingo::Net
 			// Lost: the reason came in the host's Bye. Lost(TimedOut) with it means the host stopped hearing from us
 			// (our upstream); without it, we stopped hearing from the host.
 			bool FromBye = false;
+			// EpochChanged: the new epoch.
+			uint8_t Epoch = 0;
 			// For logs only: the transport's words, or both sides' versions on a reject.
 			std::string Detail;
 		};
@@ -139,6 +150,19 @@ namespace Dingo::Net
 		std::vector<Event> TakeEvents() { return std::exchange(m_Events, {}); }
 		std::vector<Message> TakeMessages() { return std::exchange(m_Messages, {}); }
 
+		// Host with Epochs on: starts a new epoch. Every game message of the old one still in flight is dropped
+		// wherever it lands, clients get an EpochChanged and the queued ones are dropped here and there. Call it
+		// at each state change that old packets must not outlive, and when a peer rejoining under the same SteamID must not
+		// see its old traffic: that is the game's call. A client or Epochs off: a warning, nothing done.
+		void BeginEpoch();
+		uint8_t GetEpoch() const { return m_Epoch; }
+		bool EpochsOn() const { return m_EpochsOn; }
+		// Stamped packets dropped for another epoch since Start: normal traffic around a BeginEpoch.
+		uint64_t StaleDropped() const { return m_StaleDropped; }
+		// The largest game packet an unreliable send may carry: MAX_UNRELIABLE_BYTES less the stamp when epochs
+		// are on. A larger one logs an error and is dropped.
+		size_t MaxUnreliablePayload() const { return m_EpochsOn ? MAX_UNRELIABLE_BYTES - EPOCH_STAMP_BYTES : MAX_UNRELIABLE_BYTES; }
+
 		// Host: to one client's seat. Client: slot 0, the host. A first byte in the session's range is
 		// an error and the packet is dropped.
 		// Whether it was handed to the transport.
@@ -157,7 +181,7 @@ namespace Dingo::Net
 				return false;
 			}
 			std::optional<std::vector<uint8_t>> bytes = Encode(message);
-			if (!bytes || !Send(slot, *bytes, static_cast<Delivery>(T::Send)))
+			if (!bytes || !FitsUnreliable<T>(bytes->size()) || !Send(slot, *bytes, static_cast<Delivery>(T::Send)))
 			{
 				return false;
 			}
@@ -174,7 +198,7 @@ namespace Dingo::Net
 				return 0;
 			}
 			std::optional<std::vector<uint8_t>> bytes = Encode(message);
-			if (!bytes)
+			if (!bytes || !FitsUnreliable<T>(bytes->size()))
 			{
 				return 0;
 			}
@@ -259,6 +283,11 @@ namespace Dingo::Net
 		void OnBye(Peer& peer, std::span<const uint8_t> data);
 		void OnSeatJoined(Peer& peer, std::span<const uint8_t> data);
 		void OnSeatLeft(Peer& peer, std::span<const uint8_t> data);
+		void OnEpoch(Peer& peer, std::span<const uint8_t> data);
+		void OnStamped(Peer& peer, Packet& packet);
+		void DropQueuedGameMessages();
+		void OnGamePacket(Peer& peer, Packet& packet);
+		bool UnreliableFits(size_t size, Delivery delivery) const;
 		// Warns once per peer, problem and id and counts the rest; a host drops a peer that keeps at it.
 		// May drop the peer: its caller returns at once.
 		void Bad(Peer& peer, Problem problem, uint8_t id);
@@ -266,6 +295,7 @@ namespace Dingo::Net
 		void RejectPeer(PeerId id, RejectReason reason, std::string name, std::string detail);
 		void DropPeer(PeerId id, LeaveReason reason, std::string detail = {}, DisconnectReason transport = DisconnectReason::Closed);
 		void VacateSeat(int slot, LeaveReason reason, std::string detail, DisconnectReason transport);
+		std::vector<uint8_t> Stamp(std::span<const uint8_t> data) const;
 		void Lose(LeaveReason reason, std::string detail = {}, DisconnectReason transport = DisconnectReason::Closed);
 		void SendToSeated(std::span<const uint8_t> data, int exceptSlot);
 
@@ -276,6 +306,18 @@ namespace Dingo::Net
 			{
 				m_Router->NoteSent<T>(bytes);
 			}
+		}
+
+		template<NetMessage T>
+		bool FitsUnreliable(size_t size) const
+		{
+			if (static_cast<Delivery>(T::Send) == Delivery::Unreliable && size > MaxUnreliablePayload())
+			{
+				Detail::LogMessageError(std::format("message {} is {} bytes encoded; an unreliable message may not exceed {} here; not sent",
+					Detail::MessageName<T>(), size, MaxUnreliablePayload()));
+				return false;
+			}
+			return true;
 		}
 
 		template<NetMessage T>
@@ -297,6 +339,9 @@ namespace Dingo::Net
 		MessageRouter* m_Router = nullptr;
 		bool m_IsHost = false;
 		bool m_Accepting = true;
+		bool m_EpochsOn = false;
+		uint8_t m_Epoch = 0;
+		uint64_t m_StaleDropped = 0;
 		std::string m_Name;
 		int m_LocalSlot = -1;
 		std::vector<Peer> m_Peers;

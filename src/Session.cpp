@@ -148,6 +148,9 @@ namespace Dingo::Net
 		m_Events.clear();
 		m_Messages.clear();
 		m_IsHost = host;
+		m_EpochsOn = m_Params.Epochs;
+		m_Epoch = 0;
+		m_StaleDropped = 0;
 		m_Accepting = true;
 		m_Name = FilterName(name);
 		m_Now = 0.0;
@@ -468,16 +471,13 @@ namespace Dingo::Net
 		const std::span<const uint8_t> data = packet.Data;
 		if (data.empty() || !IsSessionMessage(data[0]))
 		{
-			if (m_IsHost && peer.Slot < 0)
+			const bool seated = m_IsHost ? peer.Slot >= 0 : Connected();
+			if (m_EpochsOn && seated)
 			{
-				OnUnseatedPacket(peer, data);
+				Bad(peer, Problem::Malformed, static_cast<uint8_t>(SessionMessage::Stamped));
 				return;
 			}
-			if (!m_IsHost && !Connected())
-			{
-				return;
-			}
-			m_Messages.push_back({ m_IsHost ? peer.Slot : 0, std::move(packet.Data) });
+			OnGamePacket(peer, packet);
 			return;
 		}
 
@@ -520,8 +520,96 @@ namespace Dingo::Net
 		case SessionMessage::SeatLeft:
 			OnSeatLeft(peer, data);
 			return;
+		case SessionMessage::Epoch:
+			OnEpoch(peer, data);
+			return;
+		case SessionMessage::Stamped:
+			OnStamped(peer, packet);
+			return;
 		}
 		Bad(peer, Problem::Unknown, data[0]);
+	}
+
+	void Session::OnGamePacket(Peer& peer, Packet& packet)
+	{
+		if (m_IsHost && peer.Slot < 0)
+		{
+			OnUnseatedPacket(peer, packet.Data);
+			return;
+		}
+		if (!m_IsHost && !Connected())
+		{
+			return;
+		}
+		m_Messages.push_back({ m_IsHost ? peer.Slot : 0, std::move(packet.Data) });
+	}
+
+	void Session::OnStamped(Peer& peer, Packet& packet)
+	{
+		if (!m_IsHost && !Connected())
+		{
+			return;
+		}
+		if (!m_EpochsOn || (m_IsHost && peer.Slot < 0))
+		{
+			Bad(peer, Problem::Unexpected, packet.Data[0]);
+			return;
+		}
+		uint8_t epoch = 0;
+		std::span<const uint8_t> game;
+		if (!DecodeStamped(packet.Data, epoch, game) || IsSessionMessage(game[0]))
+		{
+			Bad(peer, Problem::Malformed, packet.Data[0]);
+			return;
+		}
+		if (epoch != m_Epoch)
+		{
+			m_StaleDropped++;
+			return;
+		}
+		packet.Data.erase(packet.Data.begin(), packet.Data.begin() + static_cast<std::ptrdiff_t>(EPOCH_STAMP_BYTES));
+		OnGamePacket(peer, packet);
+	}
+
+	void Session::OnEpoch(Peer& peer, std::span<const uint8_t> data)
+	{
+		if (m_IsHost || !Connected() || !m_EpochsOn)
+		{
+			Bad(peer, Problem::Unexpected, data[0]);
+			return;
+		}
+		uint8_t epoch = 0;
+		if (!DecodeEpoch(data, epoch))
+		{
+			Bad(peer, Problem::Malformed, data[0]);
+			return;
+		}
+		m_Epoch = epoch;
+		DropQueuedGameMessages();
+		Event changed = MakeEvent(Event::Kind::EpochChanged, m_LocalSlot, {});
+		changed.Epoch = epoch;
+		m_Events.push_back(std::move(changed));
+	}
+
+	void Session::DropQueuedGameMessages()
+	{
+		m_Messages.clear();
+		for (Event& e : m_Events)
+		{
+			e.LastMessages.clear();
+		}
+	}
+
+	void Session::BeginEpoch()
+	{
+		if (!m_Transport || !m_IsHost || !m_EpochsOn)
+		{
+			LogWarn("session: BeginEpoch needs an active host with SessionParams::Epochs; ignored");
+			return;
+		}
+		m_Epoch = static_cast<uint8_t>(m_Epoch + 1);
+		DropQueuedGameMessages();
+		SendToSeated(EncodeEpoch(m_Epoch), -1);
 	}
 
 	void Session::OnUnseatedPacket(Peer& peer, std::span<const uint8_t> data)
@@ -606,7 +694,7 @@ namespace Dingo::Net
 
 		peer.Slot = slot;
 		m_Seats[slot] = { true, name, peer.Id, 0.0f, false };
-		WelcomeMessage welcome{ static_cast<uint8_t>(slot), static_cast<uint8_t>(MaxSlots()), m_Seats[0].Name, {} };
+		WelcomeMessage welcome{ static_cast<uint8_t>(slot), static_cast<uint8_t>(MaxSlots()), m_EpochsOn, m_Epoch, m_Seats[0].Name, {} };
 		for (int i = 1; i < MaxSlots(); i++)
 		{
 			if (i != slot && m_Seats[i].Taken)
@@ -650,6 +738,8 @@ namespace Dingo::Net
 		}
 
 		m_Seats.assign(welcome.MaxSlots, Seat{});
+		m_EpochsOn = welcome.Epochs;
+		m_Epoch = welcome.Epoch;
 		peer.Slot = 0;
 		m_LocalSlot = welcome.Slot;
 		m_Seats[0] = { true, FilterName(welcome.HostName), peer.Id, 0.0f, false };
@@ -752,7 +842,9 @@ namespace Dingo::Net
 		}
 		std::string name = std::move(m_Seats[left.Slot].Name);
 		m_Seats[left.Slot] = {};
-		m_Events.push_back(MakeEvent(Event::Kind::Left, left.Slot, std::move(name), left.Reason));
+		Event gone = MakeEvent(Event::Kind::Left, left.Slot, std::move(name), left.Reason);
+		gone.Transport = left.Transport;
+		m_Events.push_back(std::move(gone));
 	}
 
 	void Session::RejectPeer(PeerId id, RejectReason reason, std::string name, std::string detail)
@@ -788,7 +880,7 @@ namespace Dingo::Net
 	{
 		std::string name = std::move(m_Seats[slot].Name);
 		m_Seats[slot] = {};
-		SendToSeated(Encode(SeatLeftMessage{ static_cast<uint8_t>(slot), reason }), -1);
+		SendToSeated(Encode(SeatLeftMessage{ static_cast<uint8_t>(slot), reason, reason == LeaveReason::TransportLost ? transport : DisconnectReason::Closed }), -1);
 		Event left = MakeEvent(Event::Kind::Left, slot, std::move(name), reason, std::move(detail));
 		left.Transport = transport;
 		for (Message& m : m_Messages)
@@ -821,6 +913,21 @@ namespace Dingo::Net
 		}
 	}
 
+	std::vector<uint8_t> Session::Stamp(std::span<const uint8_t> data) const
+	{
+		return EncodeStamped(m_Epoch, data);
+	}
+
+	bool Session::UnreliableFits(size_t size, Delivery delivery) const
+	{
+		if (delivery == Delivery::Unreliable && size > MaxUnreliablePayload())
+		{
+			LogError("session: an unreliable packet of {} bytes is over the {} allowed; dropped", size, MaxUnreliablePayload());
+			return false;
+		}
+		return true;
+	}
+
 	bool Session::Send(int slot, std::span<const uint8_t> data, Delivery delivery)
 	{
 		if (!m_Transport)
@@ -831,6 +938,21 @@ namespace Dingo::Net
 		{
 			LogError("session: message id 0x{:02X} is in the session's range (0xF0-0xFF); dropped", data[0]);
 			return false;
+		}
+		if (!UnreliableFits(data.size(), delivery))
+		{
+			return false;
+		}
+		std::vector<uint8_t> stamped;
+		if (m_EpochsOn && Connected())
+		{
+			if (data.empty())
+			{
+				LogError("session: an empty packet cannot be stamped; dropped");
+				return false;
+			}
+			stamped = Stamp(data);
+			data = stamped;
 		}
 		if (slot < 0 || slot >= MaxSlots())
 		{
@@ -866,6 +988,21 @@ namespace Dingo::Net
 		{
 			LogError("session: message id 0x{:02X} is in the session's range (0xF0-0xFF); dropped", data[0]);
 			return 0;
+		}
+		if (!UnreliableFits(data.size(), delivery))
+		{
+			return 0;
+		}
+		std::vector<uint8_t> stamped;
+		if (m_EpochsOn)
+		{
+			if (data.empty())
+			{
+				LogError("session: an empty packet cannot be stamped; dropped");
+				return 0;
+			}
+			stamped = Stamp(data);
+			data = stamped;
 		}
 		int reached = 0;
 		for (int slot = 1; slot < MaxSlots(); slot++)

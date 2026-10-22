@@ -59,6 +59,8 @@ namespace Dingo::Net::Internal
 		ByteWriter w = Begin(SessionMessage::Welcome);
 		w.U8(message.Slot);
 		w.U8(message.MaxSlots);
+		w.U8(message.Epochs ? 1 : 0);
+		w.U8(message.Epoch);
 		w.Str(message.HostName);
 		w.U8(static_cast<uint8_t>(message.Others.size()));
 		for (const SeatEntry& seat : message.Others)
@@ -93,6 +95,7 @@ namespace Dingo::Net::Internal
 		ByteWriter w = Begin(SessionMessage::SeatLeft);
 		w.U8(message.Slot);
 		w.U8(static_cast<uint8_t>(message.Reason));
+		w.U8(static_cast<uint8_t>(message.Transport));
 		return w.Data();
 	}
 
@@ -115,6 +118,23 @@ namespace Dingo::Net::Internal
 		ByteWriter w = Begin(SessionMessage::Bye);
 		w.U8(static_cast<uint8_t>(reason));
 		return w.Data();
+	}
+
+	std::vector<uint8_t> EncodeEpoch(uint8_t epoch)
+	{
+		ByteWriter w = Begin(SessionMessage::Epoch);
+		w.U8(epoch);
+		return w.Data();
+	}
+
+	std::vector<uint8_t> EncodeStamped(uint8_t epoch, std::span<const uint8_t> game)
+	{
+		std::vector<uint8_t> out;
+		out.reserve(game.size() + EPOCH_STAMP_BYTES);
+		out.push_back(static_cast<uint8_t>(SessionMessage::Stamped));
+		out.push_back(epoch);
+		out.insert(out.end(), game.begin(), game.end());
+		return out;
 	}
 
 	bool DecodeHelloSessionProtocol(std::span<const uint8_t> packet, uint16_t& sessionProtocol)
@@ -152,6 +172,13 @@ namespace Dingo::Net::Internal
 		}
 		out.Slot = r.U8();
 		out.MaxSlots = r.U8();
+		const uint8_t epochs = r.U8();
+		out.Epochs = epochs == 1;
+		out.Epoch = r.U8();
+		if (!r.Ok() || epochs > 1)
+		{
+			return false;
+		}
 		out.HostName = r.Str();
 		const uint8_t count = r.U8();
 		if (!r.Ok() || count > MAX_SESSION_SLOTS)
@@ -203,7 +230,14 @@ namespace Dingo::Net::Internal
 			return false;
 		}
 		out.Slot = r.U8();
-		return ReadLeaveReason(r, out.Reason) && Done(r);
+		if (!ReadLeaveReason(r, out.Reason))
+		{
+			return false;
+		}
+		const uint8_t transport = r.U8();
+		out.Transport = static_cast<DisconnectReason>(transport);
+		return transport <= static_cast<uint8_t>(DisconnectReason::Error)
+			&& (out.Transport == DisconnectReason::Closed || out.Reason == LeaveReason::TransportLost) && Done(r);
 	}
 
 	bool DecodePing(std::span<const uint8_t> packet, SessionMessage type, uint32_t& timeMs)
@@ -221,6 +255,28 @@ namespace Dingo::Net::Internal
 	{
 		ByteReader r(packet);
 		return Is(r, SessionMessage::Bye) && ReadLeaveReason(r, reason) && Done(r);
+	}
+
+	bool DecodeEpoch(std::span<const uint8_t> packet, uint8_t& epoch)
+	{
+		ByteReader r(packet);
+		if (!Is(r, SessionMessage::Epoch))
+		{
+			return false;
+		}
+		epoch = r.U8();
+		return Done(r);
+	}
+
+	bool DecodeStamped(std::span<const uint8_t> packet, uint8_t& epoch, std::span<const uint8_t>& game)
+	{
+		if (packet.size() < EPOCH_STAMP_BYTES + 1 || packet[0] != static_cast<uint8_t>(SessionMessage::Stamped))
+		{
+			return false;
+		}
+		epoch = packet[1];
+		game = packet.subspan(EPOCH_STAMP_BYTES);
+		return true;
 	}
 
 }

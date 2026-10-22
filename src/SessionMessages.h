@@ -19,7 +19,9 @@ namespace Dingo::Net::Internal
 		Pong = 0xF4,
 		Bye = 0xF5,
 		SeatJoined = 0xF6,
-		SeatLeft = 0xF7
+		SeatLeft = 0xF7,
+		Epoch = 0xF8,
+		Stamped = 0xF9
 	};
 
 	// Hello's session protocol (right after the id) and the whole Reject never change layout, so two
@@ -43,6 +45,8 @@ namespace Dingo::Net::Internal
 	{
 		uint8_t Slot = 0;
 		uint8_t MaxSlots = 0;
+		bool Epochs = false;
+		uint8_t Epoch = 0;
 		std::string HostName;
 		std::vector<SeatEntry> Others;
 	};
@@ -60,6 +64,7 @@ namespace Dingo::Net::Internal
 	{
 		uint8_t Slot = 0;
 		LeaveReason Reason = LeaveReason::Bye;
+		DisconnectReason Transport = DisconnectReason::Closed;
 	};
 
 	std::vector<uint8_t> Encode(const HelloMessage& message);
@@ -70,6 +75,8 @@ namespace Dingo::Net::Internal
 	std::vector<uint8_t> EncodePing(uint32_t timeMs);
 	std::vector<uint8_t> EncodePong(uint32_t timeMs);
 	std::vector<uint8_t> EncodeBye(LeaveReason reason);
+	std::vector<uint8_t> EncodeEpoch(uint8_t epoch);
+	std::vector<uint8_t> EncodeStamped(uint8_t epoch, std::span<const uint8_t> game);
 
 	// Each fails on a wrong id, a short read, trailing bytes or an out-of-range enum.
 	bool DecodeHelloSessionProtocol(std::span<const uint8_t> packet, uint16_t& sessionProtocol);
@@ -81,5 +88,8 @@ namespace Dingo::Net::Internal
 	// Ping and Pong share a body.
 	bool DecodePing(std::span<const uint8_t> packet, SessionMessage type, uint32_t& timeMs);
 	bool DecodeBye(std::span<const uint8_t> packet, LeaveReason& reason);
+	bool DecodeEpoch(std::span<const uint8_t> packet, uint8_t& epoch);
+	// The game bytes (never empty) follow the two-byte header; fails on any other shape.
+	bool DecodeStamped(std::span<const uint8_t> packet, uint8_t& epoch, std::span<const uint8_t>& game);
 
 }

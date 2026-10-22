@@ -153,12 +153,14 @@ namespace
 		return w.Data();
 	}
 
-	Bytes Welcome(uint8_t slot, uint8_t maxSlots, std::vector<std::pair<uint8_t, std::string>> others = {})
+	Bytes Welcome(uint8_t slot, uint8_t maxSlots, std::vector<std::pair<uint8_t, std::string>> others = {}, uint8_t epochs = 0, uint8_t epoch = 0)
 	{
 		ByteWriter w;
 		w.U8(0xF1);
 		w.U8(slot);
 		w.U8(maxSlots);
+		w.U8(epochs);
+		w.U8(epoch);
 		w.Str("Host");
 		w.U8(static_cast<uint8_t>(others.size()));
 		for (const auto& [otherSlot, name] : others)
@@ -560,7 +562,7 @@ TEST(SessionClientSurvivesMalformedPacketsFromTheHost)
 	trailing.push_back(0);
 	SendAll(*listen, toClient, {
 		{ 0xF1 }, Welcome(0, 4), Welcome(4, 4), Welcome(1, 33), Welcome(1, 1), Welcome(1, 4, { { 1, "Me" } }),
-		Welcome(1, 4, { { 2, "Bo" }, { 2, "Bo" } }), Welcome(1, 4, { { 0, "Host" } }), trailing, { 0xF6, 2, 0 }, { 0xF7, 2, 0 },
+		Welcome(1, 4, { { 2, "Bo" }, { 2, "Bo" } }), Welcome(1, 4, { { 0, "Host" } }), trailing, { 0xF6, 2, 0 }, { 0xF7, 2, 0, 0 },
 		{ 0xF2 }, { 0xF2, 9, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, { 0xF3 }, { 0xF4, 1 }, { 0xFA }, { 0xF5 }, { 0xF5, 9 }, { 0xF5, 3 },
 		{ 0x10, 1 }, {} });
 	a.Update();
@@ -575,13 +577,13 @@ TEST(SessionClientSurvivesMalformedPacketsFromTheHost)
 	a.Clear();
 
 	SendAll(*listen, toClient, {
-		{ 0xF6, 7, 0 }, { 0xF6, 2, 1, 'X' }, { 0xF6, 0, 0 }, { 0xF6, 1, 0 }, { 0xF6, 200, 0 }, { 0xF7, 0, 0 }, { 0xF7, 1, 9 },
-		{ 0xF7, 2, 0 }, { 0xF7, 255, 0 }, { 0xF2, 0, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, Welcome(1, 4), { 0xF0, 1, 0 } });
+		{ 0xF6, 7, 0 }, { 0xF6, 2, 1, 'X' }, { 0xF6, 0, 0 }, { 0xF6, 1, 0 }, { 0xF6, 200, 0 }, { 0xF7, 0, 0, 0 }, { 0xF7, 1, 9, 0 },
+		{ 0xF7, 2, 0, 0 }, { 0xF7, 255, 0, 0 }, { 0xF2, 0, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, Welcome(1, 4), { 0xF0, 1, 0 } });
 	a.Update();
 	CHECK(a.Events.empty());
 	CHECK(a.S.Active() && a.S.SeatedCount() == 3);
 
-	SendAll(*listen, toClient, { { 0xF7, 1, static_cast<uint8_t>(LeaveReason::Kicked) }, { 0x10, 7 }, {} });
+	SendAll(*listen, toClient, { { 0xF7, 1, static_cast<uint8_t>(LeaveReason::Kicked), 0 }, { 0x10, 7 }, {} });
 	a.Update();
 	const Session::Event* left = a.Find(Kind::Left, 1);
 	CHECK(left && left->Name == "Cy" && left->Leave == LeaveReason::Kicked);
@@ -617,7 +619,7 @@ TEST(SessionHostSurvivesMalformedPacketsFromAClient)
 	trailing.push_back(0xAA);
 	SendAll(*raw, toHost, {
 		{ 0xF0 }, { 0xF0, k_SessionProtocol }, { 0xF0, k_SessionProtocol, 0, PROTOCOL }, trailing, { 0xF3 }, { 0xF4, 1 },
-		Welcome(1, 4), { 0xF2, 0, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, { 0xF6, 1, 0 }, { 0xF7, 1, 0 }, { 0xFF }, { 0xF5 }, { 0xF5, 9 },
+		Welcome(1, 4), { 0xF2, 0, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, { 0xF6, 1, 0 }, { 0xF7, 1, 0, 0 }, { 0xFF }, { 0xF5 }, { 0xF5, 9 },
 		{ 0x05, 1, 2 }, {} });
 	lan.Pump(1);
 	CHECK(host.Events.empty() && host.Messages.empty());
@@ -628,7 +630,7 @@ TEST(SessionHostSurvivesMalformedPacketsFromAClient)
 	e.Poll();
 	CHECK(host.Find(Kind::Joined, 1) && host.Find(Kind::Joined, 1)->Name == "Zed");
 	const Packet* welcome = FindPacket(e, 0xF1);
-	CHECK(welcome && welcome->Data == Bytes({ 0xF1, 1, 4, 4, 'H', 'o', 's', 't', 0 }));
+	CHECK(welcome && welcome->Data == Bytes({ 0xF1, 1, 4, 0, 0, 4, 'H', 'o', 's', 't', 0 }));
 	host.Clear();
 
 	SendAll(*raw, toHost, {
@@ -1013,7 +1015,7 @@ TEST(SessionClientTurnsAwayAHostWithMoreSeats)
 		return;
 	}
 	const PeerId toB = h.Find(PeerEvent::Kind::Connected)->Peer;
-	SendAll(*listen, toB, { Welcome(1, 4), { 0xF6, 20, 1, 'Z' }, { 0xF6, 4, 1, 'Z' }, { 0xF7, 20, 0 } });
+	SendAll(*listen, toB, { Welcome(1, 4), { 0xF6, 20, 1, 'Z' }, { 0xF6, 4, 1, 'Z' }, { 0xF7, 20, 0, 0 } });
 	b.Update();
 	CHECK(b.Find(Kind::Welcomed, 1) != nullptr);
 	CHECK(b.Count(Kind::Joined) == 0 && b.Count(Kind::Left) == 0);
@@ -1476,4 +1478,163 @@ TEST(SessionTakesBackAClientThatRejoinsTheMomentItIsTimedOut)
 		step(true);
 	}
 	CHECK(a.Find(Kind::Welcomed, 1) && a.S.Connected() && host.S.SeatedCount() == 2);
+}
+
+TEST(SessionSeatLeftCarriesTheLeaversTransportReason)
+{
+	LogCapture log;
+	Node host(MakeParams(nullptr));
+	std::shared_ptr<Script> hostScript = HostWithAnn(host);
+	hostScript->Events.push_back(Connect(8));
+	hostScript->Packets.push_back({ 8, Hello(k_SessionProtocol, PROTOCOL, CONTENT, "Bo") });
+	host.Update();
+	CHECK(host.S.SeatedCount() == 3);
+
+	hostScript->Events.push_back(Disconnect(8, DisconnectReason::Reset, "ECONNRESET"));
+	host.Update();
+	const Bytes lost = { 0xF7, 2, static_cast<uint8_t>(LeaveReason::TransportLost), static_cast<uint8_t>(DisconnectReason::Reset) };
+	CHECK(hostScript->SentTo(7, lost));
+	const Session::Event* hostLeft = host.Find(Kind::Left, 2);
+	CHECK(hostLeft && hostLeft->Transport == DisconnectReason::Reset);
+
+	hostScript->Events.push_back(Connect(9));
+	hostScript->Packets.push_back({ 9, Hello(k_SessionProtocol, PROTOCOL, CONTENT, "Cy") });
+	host.Update();
+	host.S.Kick(2);
+	CHECK(hostScript->SentTo(7, { 0xF7, 2, static_cast<uint8_t>(LeaveReason::Kicked), 0 }));
+
+	auto script = std::make_shared<Script>();
+	Node a(MakeParams(nullptr));
+	a.S.StartClient(std::make_unique<ScriptedTransport>(script), "Ann");
+	script->Events.push_back(Connect(1));
+	script->Packets.push_back({ 1, Welcome(1, 4, { { 2, "Bo" }, { 3, "Cy" } }) });
+	a.Update();
+	script->Packets.push_back({ 1, lost });
+	script->Packets.push_back({ 1, { 0xF7, 3, static_cast<uint8_t>(LeaveReason::Kicked), 0 } });
+	a.Update();
+	const Session::Event* left = a.Find(Kind::Left, 2);
+	CHECK(left && left->Leave == LeaveReason::TransportLost && left->Transport == DisconnectReason::Reset && left->Name == "Bo");
+	const Session::Event* kicked = a.Find(Kind::Left, 3);
+	CHECK(kicked && kicked->Leave == LeaveReason::Kicked && kicked->Transport == DisconnectReason::Closed);
+
+	script->Packets.push_back({ 1, Welcome(1, 4) });
+	script->Packets.push_back({ 1, { 0xF6, 2, 0 } });
+	a.Update();
+	a.Clear();
+	script->Packets.push_back({ 1, { 0xF7, 2, 3, 6 } });
+	script->Packets.push_back({ 1, { 0xF7, 2, 3 } });
+	script->Packets.push_back({ 1, { 0xF7, 2, 3, 3, 0 } });
+	script->Packets.push_back({ 1, { 0xF7, 2, static_cast<uint8_t>(LeaveReason::Bye), 3 } });
+	a.Update();
+	CHECK(a.Events.empty() && a.S.Connected());
+}
+
+TEST(SessionTurnsAwayAV01ClientWithAProtocolMismatchNotATimeout)
+{
+	LogCapture log;
+	FakeClock clock;
+	Lan lan(MakeParams(&clock));
+	std::unique_ptr<LoopbackTransport> raw = LoopbackTransport::Connect(*lan.Link);
+	Endpoint e{ raw.get() };
+	e.Poll();
+	lan.Pump(1);
+	CHECK(e.Has(PeerEvent::Kind::Connected));
+	if (!e.Has(PeerEvent::Kind::Connected))
+	{
+		return;
+	}
+	const Bytes v01Hello = Hello(1, PROTOCOL, CONTENT, "Old");
+	const Bytes golden = { 0xF0, 1, 0, PROTOCOL, 0, 0x44, 0x33, 0x22, 0x11, 3, 'O', 'l', 'd', 3, 'r', 'a', 'w' };
+	CHECK(v01Hello == golden);
+	raw->Send(e.Find(PeerEvent::Kind::Connected)->Peer, v01Hello, Delivery::Reliable);
+	lan.Pump(1);
+	e.Poll();
+
+	const Packet* reject = FindPacket(e, 0xF2);
+	CHECK(reject && reject->Data.size() > 6);
+	if (reject && reject->Data.size() > 6)
+	{
+		CHECK(reject->Data[0] == 0xF2 && reject->Data[1] == static_cast<uint8_t>(RejectReason::ProtocolMismatch));
+		CHECK(reject->Data[2] == k_SessionProtocol && reject->Data[3] == 0);
+	}
+	CHECK(e.Has(PeerEvent::Kind::Disconnected));
+	const Session::Event* rejected = lan.Host->Find(Kind::Rejected);
+	CHECK(rejected && rejected->Rejection == RejectReason::ProtocolMismatch);
+	CHECK(rejected && rejected->Detail.find("session 1") != std::string::npos);
+	CHECK(lan.Host->S.PeerCount() == 0 && lan.Host->S.SeatedCount() == 1);
+	CHECK(log.Errors() == 0);
+}
+
+TEST(SessionClientTakesAV01HostsRejectAndStopsAtOnce)
+{
+	LogCapture log;
+	FakeClock clock;
+	std::unique_ptr<LoopbackTransport> listen = LoopbackTransport::Listen();
+	Endpoint h{ listen.get() };
+	Node a(MakeParams(&clock));
+	a.S.StartClient(LoopbackTransport::Connect(*listen), "Ann");
+	a.Update();
+	h.Poll();
+	CHECK(h.Has(PeerEvent::Kind::Connected));
+	if (!h.Has(PeerEvent::Kind::Connected))
+	{
+		return;
+	}
+	CHECK(FindPacket(h, 0xF0) != nullptr);
+
+	ByteWriter w;
+	w.U8(0xF2);
+	w.U8(static_cast<uint8_t>(RejectReason::ProtocolMismatch));
+	w.U16(1);
+	w.U16(PROTOCOL);
+	w.U32(CONTENT);
+	w.Str("0.1.1");
+	const Bytes v01Reject = w.Data();
+	CHECK(v01Reject == Bytes({ 0xF2, 0, 1, 0, PROTOCOL, 0, 0x44, 0x33, 0x22, 0x11, 5, '0', '.', '1', '.', '1' }));
+	SendAll(*listen, h.Find(PeerEvent::Kind::Connected)->Peer, { v01Reject });
+	a.Update();
+	const Session::Event* rejected = a.Find(Kind::Rejected);
+	CHECK(rejected && rejected->Rejection == RejectReason::ProtocolMismatch);
+	CHECK(rejected && rejected->Detail.find("session 1") != std::string::npos);
+	CHECK(!a.S.Active() && a.Count(Kind::Lost) == 0);
+}
+
+TEST(SessionEpochMessagesAreDroppedWhenMalformedOrOnTheWrongSide)
+{
+	LogCapture log;
+	auto script = std::make_shared<Script>();
+	SessionParams params = MakeParams(nullptr);
+	params.Epochs = true;
+	Node a(params);
+	a.S.StartClient(std::make_unique<ScriptedTransport>(script), "Ann");
+	script->Events.push_back(Connect(1));
+	script->Packets.push_back({ 1, { 0xF8, 1 } });
+	script->Packets.push_back({ 1, { 0xF9, 0, 0x10 } });
+	a.Update();
+	CHECK(a.Events.empty() && a.Messages.empty());
+
+	script->Packets.push_back({ 1, Welcome(1, 4, {}, 1, 7) });
+	a.Update();
+	CHECK(a.S.Connected() && a.S.EpochsOn() && a.S.GetEpoch() == 7);
+	a.Clear();
+
+	script->Packets.push_back({ 1, Welcome(1, 4, {}, 2, 7) });
+	script->Packets.push_back({ 1, { 0xF8 } });
+	script->Packets.push_back({ 1, { 0xF8, 1, 2 } });
+	script->Packets.push_back({ 1, { 0xF9, 7 } });
+	script->Packets.push_back({ 1, { 0x10, 1 } });
+	script->Packets.push_back({ 1, { 0xF9, 6, 0x10, 1 } });
+	script->Packets.push_back({ 1, { 0xF9, 8, 0x10, 1 } });
+	a.Update();
+	CHECK(a.Events.empty() && a.Messages.empty() && a.S.GetEpoch() == 7);
+	CHECK(a.S.StaleDropped() == 2);
+
+	script->Packets.push_back({ 1, { 0xF9, 7, 0x10, 1 } });
+	script->Packets.push_back({ 1, { 0xF8, 8 } });
+	a.Update();
+	CHECK(a.Messages.empty() && a.Count(Kind::EpochChanged) == 1 && a.S.GetEpoch() == 8);
+
+	a.S.BeginEpoch();
+	CHECK(a.S.GetEpoch() == 8);
+	CHECK(log.Warnings() >= 4);
 }

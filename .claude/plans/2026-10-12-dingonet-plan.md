@@ -436,6 +436,18 @@ v0.1's API keeps compiling; only the epoch changes the wire.
   - with `Epochs = false` the wire and behaviour are exactly v0.1's;
   - a v0.1 peer gets `ProtocolMismatch`.
 
+**As built (2026-10-22)**: `Session.h`, `Session.cpp`, `SessionMessages.{h,cpp}`; 17 new tests (`tests/EpochTests.cpp` 13, `SessionTests.cpp` 4), 110 in all, Debug and Release on Linux.
+- Wire, `k_SessionProtocol` 2 (Hello and Reject layouts unchanged):
+  - `Welcome` = `F1 slot maxSlots epochsOn(0|1) epoch hostName n (slot name)*`
+  - `SeatLeft` = `F7 slot LeaveReason DisconnectReason`; the transport byte must be `Closed` unless the leave is `TransportLost`, else malformed (the host sends it that way)
+  - `Epoch` = `F8 epoch`; `Stamped` = `F9 epoch game...` (game bytes non-empty)
+- The host's `Epochs` rules: a client adopts the flag and epoch from the `Welcome`; its own param is only a hint for `MaxUnreliablePayload()` until then. A client never stamps or accepts a stamp before it is welcomed.
+- `BeginEpoch()`: host with `Epochs` only, else a warning and nothing; bumps the `u8` (wraps), sends `Epoch` reliably to every seat, drops the `TakeMessages` queue and the `LastMessages` of `Left` events not yet taken. A client's `Epoch` does the same and raises `EpochChanged` (`Event::Epoch`). `GetEpoch()`, `EpochsOn()`, `StaleDropped()` (debug counter).
+- Stale stamps (older or not yet announced) are dropped silently, counted in `StaleDropped()`, never toward the 32-bad hang-up. An unstamped game packet from a seated peer with epochs on, a `Stamped` shorter than 3 bytes or carrying a session id, and a `Stamped`/`Epoch` where epochs are off are malformed/unexpected (warned once per peer and id as `0xF9`/`0xF8`). A `Stamped` from an unseated host peer is unexpected (older wires never stamp); its raw packets still reach `UnseatedPacket`.
+- `MaxUnreliablePayload()` = 1098 with epochs on, else 1100. The session now checks the unreliable limit itself in both modes: an oversize span `Send` returns false (the transport used to drop it silently); typed sends name the message and count nothing. An empty packet is refused (error) with epochs on; with epochs off the wire is v0.1's, byte for byte.
+- Compatibility tests: a v0.1 Hello (protocol 1) at a v0.2 host gets `Reject(ProtocolMismatch)` and a hang-up (no `Bye`, as in v0.1); a v0.2 client given a hand-written v0.1 `Reject` raises `Rejected(ProtocolMismatch)` at once. A v0.1 host compares Hello's leading session protocol first and rejects a protocol-2 Hello the same way.
+- Beyond the plan: the stale counter, `EpochsOn()`, the 0xF9/0xF8 warning ids, the strict `SeatLeft` combination, the empty-packet refusal. Whether a same-SteamID rejoiner's old traffic dies is the game's call (`BeginEpoch`).
+
 ### Phase 3 — the mirror toolkit (~3 h, Opus)
 
 `include/DingoNet/Mirror.h`, header-only, no glm. The game supplies `Interpolate(const T& a, const T& b,
