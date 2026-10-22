@@ -97,7 +97,7 @@ The core links only the OS: Winsock (`ws2_32`, pulled in by `#pragma comment` in
 
 See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 
-- **v0.1 Extract** (built, not yet released): phases 1–5 in this repo, phase 6 on Headstone `feat/dingonet` (`4da5842`, unpushed). Left before the `v0.1.0` tag: an Opus review of the whole v0.1 diff; after it: the release, Headstone's `fetch-dingonet.ps1` pin, the 20-minute soak and the two-account Steam check.
+- **v0.1 Extract** (released `v0.1.0`, build 11, 2026-10-14): phases 1–5 in this repo; phase 6 merged into Headstone as PR #97 (2026-10-21), behind its premake `--dingonet` option (`HEADSTONE_DINGONET`; the default build keeps Headstone's own net layer in `src/Net/Legacy/`). Both of Headstone's gates for making DingoNet its default (its `dingonet-flag-plan.md` Phase 4) passed on 2026-10-21: the owner (Windows) and a friend (Linux build) played a Steam lobby on their own accounts, the first run of the Steam transport and of Windows↔Linux co-op. Headstone then deletes the old layer (Phase 5) after one Playtest upload with no net reports. Still open on DingoNet's side: an Opus review of the whole v0.1 diff (skipped before the tag).
 - **v0.2 Structure**: message registry, session epoch, generic `Mirror<T>` interpolation.
 - **v0.3 UDP**: a reliable-UDP transport, LAN play without Steam.
 - **v0.4 Engine bridge**: `DingoNet-Engine`.

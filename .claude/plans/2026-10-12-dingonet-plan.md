@@ -310,6 +310,16 @@ review led to two DingoNet fixes (`23c2c2c` scripts no longer pause when called 
   two-account Steam session, and Headstone's CI, which 404s until a DingoNet `v0.1.0` release exists
   (`fetch-dingonet.ps1` pins the version and build in two lines).
 
+**Released (2026-10-14 to 10-21)**: `v0.1.0` published 2026-10-14 from `b815b9e` (build 11; the release
+workflow built and uploaded all six zips). Headstone merged phase 6 as PR #97 on 2026-10-21, but behind a
+premake option, `--dingonet` (`HEADSTONE_DINGONET`): the default build keeps Headstone's own net layer in
+`src/Net/Legacy/` until the DingoNet build passes a two-account Steam session and Windows↔Linux co-op
+(Headstone's `dingonet-flag-plan.md`, Phases 4–5). Both builds share protocol 20, the content hash and
+`Layout::` trig; Headstone's Linux build fetches the Linux zip (`fetch-dingonet.sh`). The owner (Windows) played the
+`--dingonet` build with a friend on the Linux build on 2026-10-21, through a Steam lobby on their own accounts,
+and it worked as expected: the first run of the Steam transport, on both OSes, and of Windows↔Linux co-op.
+That passes both of Headstone's Phase 4 gates.
+
 **Estimate**: phases 1–5 about a day and a half of agent time, Linux included; phase 6 about half a
 day plus the manual two-machine Steam check.
 
