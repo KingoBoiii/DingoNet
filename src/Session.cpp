@@ -821,57 +821,62 @@ namespace Dingo::Net
 		}
 	}
 
-	void Session::Send(int slot, std::span<const uint8_t> data, Delivery delivery)
+	bool Session::Send(int slot, std::span<const uint8_t> data, Delivery delivery)
 	{
 		if (!m_Transport)
 		{
-			return;
+			return false;
 		}
 		if (!data.empty() && IsSessionMessage(data[0]))
 		{
 			LogError("session: message id 0x{:02X} is in the session's range (0xF0-0xFF); dropped", data[0]);
-			return;
+			return false;
 		}
 		if (slot < 0 || slot >= MaxSlots())
 		{
-			return;
+			return false;
 		}
 		if (m_IsHost)
 		{
 			if (slot != 0 && m_Seats[slot].Taken)
 			{
 				m_Transport->Send(m_Seats[slot].Connection, data, delivery);
+				return true;
 			}
 		}
 		else if (slot == 0 && Connected())
 		{
 			m_Transport->Send(m_Seats[0].Connection, data, delivery);
+			return true;
 		}
+		return false;
 	}
 
-	void Session::Broadcast(std::span<const uint8_t> data, Delivery delivery, int exceptSlot)
+	int Session::Broadcast(std::span<const uint8_t> data, Delivery delivery, int exceptSlot)
 	{
 		if (!m_IsHost)
 		{
-			Send(0, data, delivery);
-			return;
+			return Send(0, data, delivery) ? 1 : 0;
 		}
 		if (!m_Transport)
 		{
-			return;
+			return 0;
 		}
 		if (!data.empty() && IsSessionMessage(data[0]))
 		{
 			LogError("session: message id 0x{:02X} is in the session's range (0xF0-0xFF); dropped", data[0]);
-			return;
+			return 0;
 		}
+		int reached = 0;
 		for (int slot = 1; slot < MaxSlots(); slot++)
 		{
 			if (slot != exceptSlot && m_Seats[slot].Taken)
 			{
 				m_Transport->Send(m_Seats[slot].Connection, data, delivery);
+				reached++;
 			}
 		}
+		return reached;
 	}
 
 	int Session::SeatedCount() const

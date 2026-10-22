@@ -1,9 +1,11 @@
 #pragma once
 
+#include "DingoNet/Messages.h"
 #include "DingoNet/Transport.h"
 
 #include <chrono>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -19,14 +21,7 @@ namespace Dingo::Net
 	// The session's own wire version: bumped only when its messages change. A game's Protocol and
 	// ContentHash ride beside it in the Hello.
 	inline constexpr uint16_t k_SessionProtocol = 1;
-	// The first byte of every packet is a message id: games own 0x00-0xEF, the session 0xF0-0xFF.
-	inline constexpr uint8_t FIRST_SESSION_MESSAGE = 0xF0;
 	inline constexpr int MAX_SESSION_SLOTS = 32;
-
-	constexpr bool IsSessionMessage(uint8_t id)
-	{
-		return id >= FIRST_SESSION_MESSAGE;
-	}
 
 	enum class RejectReason : uint8_t
 	{
@@ -146,9 +141,54 @@ namespace Dingo::Net
 
 		// Host: to one client's seat. Client: slot 0, the host. A first byte in the session's range is
 		// an error and the packet is dropped.
-		void Send(int slot, std::span<const uint8_t> data, Delivery delivery);
+		// Whether it was handed to the transport.
+		bool Send(int slot, std::span<const uint8_t> data, Delivery delivery);
 		// Host: every seated client but exceptSlot. Client: the host.
-		void Broadcast(std::span<const uint8_t> data, Delivery delivery, int exceptSlot = -1);
+		// How many seats it was handed to the transport for.
+		int Broadcast(std::span<const uint8_t> data, Delivery delivery, int exceptSlot = -1);
+
+		// A message in its declared delivery. A host sending a ToHost message or a client a ToClients one is an
+		// error and dropped. The router's Sent counters move only for a packet handed to the transport.
+		template<NetMessage T>
+		bool Send(int slot, const T& message)
+		{
+			if (!DirectionAllowed<T>())
+			{
+				return false;
+			}
+			std::optional<std::vector<uint8_t>> bytes = Encode(message);
+			if (!bytes || !Send(slot, *bytes, static_cast<Delivery>(T::Send)))
+			{
+				return false;
+			}
+			NoteSent<T>(bytes->size());
+			return true;
+		}
+
+		// One send in the router's stats if it reached at least one seat, however many.
+		template<NetMessage T>
+		int Broadcast(const T& message, int exceptSlot = -1)
+		{
+			if (!DirectionAllowed<T>())
+			{
+				return 0;
+			}
+			std::optional<std::vector<uint8_t>> bytes = Encode(message);
+			if (!bytes)
+			{
+				return 0;
+			}
+			const int reached = Broadcast(*bytes, static_cast<Delivery>(T::Send), exceptSlot);
+			if (reached > 0)
+			{
+				NoteSent<T>(bytes->size());
+			}
+			return reached;
+		}
+
+		// Not owned; must outlive the session or be reset. Null: typed sends keep no counters.
+		void SetRouter(MessageRouter* router) { m_Router = router; }
+		MessageRouter* GetRouter() const { return m_Router; }
 
 		bool Active() const { return m_Transport != nullptr; }
 		bool IsHost() const { return m_IsHost; }
@@ -229,9 +269,32 @@ namespace Dingo::Net
 		void Lose(LeaveReason reason, std::string detail = {}, DisconnectReason transport = DisconnectReason::Closed);
 		void SendToSeated(std::span<const uint8_t> data, int exceptSlot);
 
+		template<NetMessage T>
+		void NoteSent(size_t bytes)
+		{
+			if (m_Router)
+			{
+				m_Router->NoteSent<T>(bytes);
+			}
+		}
+
+		template<NetMessage T>
+		bool DirectionAllowed() const
+		{
+			const Direction dir = static_cast<Direction>(T::Dir);
+			if (Active() && ((dir == Direction::ToHost && m_IsHost) || (dir == Direction::ToClients && !m_IsHost)))
+			{
+				Detail::LogMessageError(std::format("message {} goes {} and cannot be sent by a {}; dropped",
+					Detail::MessageName<T>(), dir == Direction::ToHost ? "to the host" : "to clients", m_IsHost ? "host" : "client"));
+				return false;
+			}
+			return true;
+		}
+
 	private:
 		SessionParams m_Params;
 		std::unique_ptr<Transport> m_Transport;
+		MessageRouter* m_Router = nullptr;
 		bool m_IsHost = false;
 		bool m_Accepting = true;
 		std::string m_Name;

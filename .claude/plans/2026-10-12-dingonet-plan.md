@@ -399,6 +399,13 @@ v0.1's API keeps compiling; only the epoch changes the wire.
   - duplicate and reserved ids;
   - counters.
 
+**As built (2026-10-22)**: `Messages.h`, `src/Messages.cpp`; 93 tests in all, 18 of them new in `tests/MessageTests.cpp`. No wire change (`k_SessionProtocol` stays 1).
+- A `NetMessage` concept (default-constructible; `Id` an integer or enum 0-255, static_asserted; `Dir`, `Send`, `Write`, `Read`; optional `Name`, else the hex id in logs). `Encode(msg)` returns `std::optional<std::vector<uint8_t>>`: `nullopt` plus an error naming the message for an oversize unreliable one or a reserved id.
+- `MessageRouter`: `On<T>(handler)` (false plus an error for a duplicate or reserved id), `Dispatch(slot, data, isHost)` (true if a handler ran; unknown id, empty data, wrong side, short read or trailing bytes are dropped), `NoteSent<T>(bytes)`, `Stats(id)`, `Registered`, `KnownIds` (handler or sent), `NameOf`, `DroppedUnknown`, `ResetStats`. The 256-entry table is on the heap, allocated once, so a handler may call `On` and `Dispatch`; the router is not copyable or movable.
+- `Session::SetRouter(MessageRouter*)` (not owned, null = none), typed `Send(slot, msg)` / `Broadcast(msg, exceptSlot)` in the message's delivery. A host sending a `ToHost` message or a client a `ToClients` one logs an error and drops it. The span `Send` now returns `bool` and `Broadcast` an `int` (seats reached); callers ignoring them compile as before.
+- Counters: `Received`/`BytesIn` only when a handler ran; bytes include the id byte; `Sent`/`BytesOut` only for a packet handed to the transport, one send per `Broadcast` that reached a seat; direction and malformed drops per id; there is no router `Encode`.
+- Beyond the plan: `SetRouter` (counters need the router in the send path); the reserved-id refusal is a runtime error, not a `static_assert`, so it stays testable; `FIRST_SESSION_MESSAGE`/`IsSessionMessage` moved from `Session.h` to `Messages.h`; handlers must be copyable (stored in a `std::function`).
+
 ### Phase 2 — session epoch (~3 h, Opus; wire change)
 
 - The host calls `Session::BeginEpoch()` at every state change where old packets must die: run start,
