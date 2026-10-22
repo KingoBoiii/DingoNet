@@ -196,7 +196,10 @@ namespace Dingo::Net
 			{
 				SteamNetworkingMessage_t* m = messages[i];
 				const uint64_t from = m->m_identityPeer.GetSteamID64();
-				if (m->m_cbSize > 0 && static_cast<const uint8_t*>(m->m_pData)[0] == SESSION_HELLO) impl.Recent.erase(from);
+				if (m->m_cbSize > 0 && static_cast<const uint8_t*>(m->m_pData)[0] == SESSION_HELLO)
+				{
+					impl.Recent.erase(from);
+				}
 				const bool known = impl.Peers.contains(from);
 				const bool welcome = !impl.Recent.contains(from) && (impl.Host != 0 ? from == impl.Host : (known || (impl.Allow && impl.Allow(from))));
 				if (welcome)
