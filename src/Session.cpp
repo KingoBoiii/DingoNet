@@ -408,6 +408,9 @@ namespace Dingo::Net
 				{
 					LogInfo("session: dropped peer {}: no Hello within {} s", id, m_Params.HandshakeTimeout);
 				}
+				// A transport whose Disconnect is silent on the wire (Steam) would otherwise leave the peer
+				// thinking it is still in.
+				m_Transport->Send(id, EncodeBye(LeaveReason::TimedOut), Delivery::Reliable);
 				DropPeer(id, LeaveReason::TimedOut, std::format("silent for over {} s", m_Params.Timeout));
 			}
 		}
@@ -466,7 +469,12 @@ namespace Dingo::Net
 				Bad(peer, Problem::Malformed, data[0]);
 				return;
 			}
-			m_Transport->Send(peer.Id, EncodePong(time), Delivery::Unreliable);
+			// Over Steam a client we timed out comes back as a new, unseated connection: a Pong would keep it
+			// believing it still has its seat.
+			if (!m_IsHost || peer.Slot >= 0)
+			{
+				m_Transport->Send(peer.Id, EncodePong(time), Delivery::Unreliable);
+			}
 			return;
 		}
 		case SessionMessage::Pong:
@@ -661,14 +669,14 @@ namespace Dingo::Net
 	void Session::OnBye(Peer& peer, std::span<const uint8_t> data)
 	{
 		LeaveReason reason = LeaveReason::Bye;
-		if (!DecodeBye(data, reason) || (reason != LeaveReason::Bye && reason != LeaveReason::Kicked))
+		if (!DecodeBye(data, reason) || reason == LeaveReason::TransportLost)
 		{
 			Bad(peer, Problem::Malformed, data[0]);
 			return;
 		}
 		if (!m_IsHost)
 		{
-			Lose(reason);
+			Lose(reason, reason == LeaveReason::TimedOut ? std::string("the host stopped hearing from us") : std::string());
 		}
 		else if (peer.Slot >= 0)
 		{

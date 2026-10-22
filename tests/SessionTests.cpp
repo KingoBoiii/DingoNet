@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <deque>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -262,6 +264,82 @@ namespace
 		std::shared_ptr<Script> m_Script;
 	};
 
+	struct SteamWire
+	{
+		std::deque<Bytes> ToHost;
+		std::deque<Bytes> ToClient;
+		bool DropByesToClient = false;
+	};
+
+	// SteamTransport's semantics between one host and one client: Disconnect is silent on the wire, a
+	// disconnected peer is ignored for 1 s, then whatever it sends makes it a new connection.
+	class FakeSteam final : public Transport
+	{
+	public:
+		static constexpr PeerId HOST = 100;
+		static constexpr PeerId CLIENT = 200;
+
+		FakeSteam(SteamWire& wire, bool host, FakeClock& clock) : m_Wire(wire), m_Host(host), m_Clock(clock) {}
+
+		void Send(PeerId, std::span<const uint8_t> data, Delivery) override
+		{
+			if (m_Host && m_Wire.DropByesToClient && !data.empty() && data[0] == 0xF5)
+			{
+				return;
+			}
+			(m_Host ? m_Wire.ToClient : m_Wire.ToHost).emplace_back(data.begin(), data.end());
+		}
+
+		void Poll(std::vector<Packet>& packets, std::vector<PeerEvent>& events) override
+		{
+			if (!m_Host && !m_Announced)
+			{
+				m_Announced = true;
+				m_Peers.insert(HOST);
+				events.push_back(Connect(HOST));
+			}
+			std::erase_if(m_Ignored, [this](const auto& entry) { return entry.second <= m_Clock.Now; });
+			std::deque<Bytes>& in = m_Host ? m_Wire.ToHost : m_Wire.ToClient;
+			const PeerId from = m_Host ? CLIENT : HOST;
+			for (; !in.empty(); in.pop_front())
+			{
+				if (m_Ignored.contains(from))
+				{
+					continue;
+				}
+				if (m_Peers.insert(from).second)
+				{
+					events.push_back(Connect(from));
+				}
+				packets.push_back({ from, std::move(in.front()) });
+			}
+		}
+
+		void Disconnect(PeerId peer) override
+		{
+			m_Peers.erase(peer);
+			m_Ignored[peer] = m_Clock.Now + std::chrono::seconds(1);
+		}
+
+		void Close() override
+		{
+			m_Peers.clear();
+		}
+
+		std::string Describe() const override
+		{
+			return "fake steam";
+		}
+
+	private:
+		SteamWire& m_Wire;
+		bool m_Host;
+		FakeClock& m_Clock;
+		bool m_Announced = false;
+		std::set<PeerId> m_Peers;
+		std::map<PeerId, std::chrono::steady_clock::time_point> m_Ignored;
+	};
+
 	// A host session over a scripted transport with "Ann" seated in slot 1 as peer 7.
 	std::shared_ptr<Script> HostWithAnn(Node& host)
 	{
@@ -479,7 +557,7 @@ TEST(SessionClientSurvivesMalformedPacketsFromTheHost)
 	SendAll(*listen, toClient, {
 		{ 0xF1 }, Welcome(0, 4), Welcome(4, 4), Welcome(1, 33), Welcome(1, 1), Welcome(1, 4, { { 1, "Me" } }),
 		Welcome(1, 4, { { 2, "Bo" }, { 2, "Bo" } }), Welcome(1, 4, { { 0, "Host" } }), trailing, { 0xF6, 2, 0 }, { 0xF7, 2, 0 },
-		{ 0xF2 }, { 0xF2, 9, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, { 0xF3 }, { 0xF4, 1 }, { 0xFA }, { 0xF5 }, { 0xF5, 9 }, { 0xF5, 1 },
+		{ 0xF2 }, { 0xF2, 9, 1, 0, 20, 0, 0, 0, 0, 0, 0 }, { 0xF3 }, { 0xF4, 1 }, { 0xFA }, { 0xF5 }, { 0xF5, 9 }, { 0xF5, 3 },
 		{ 0x10, 1 }, {} });
 	a.Update();
 	CHECK(a.Events.empty() && a.Messages.empty());
@@ -969,6 +1047,51 @@ TEST(SessionTreatsAReusedIdAsAFreshPeer)
 	CHECK(bye && bye->Leave == LeaveReason::Bye);
 	CHECK(host.Events.size() == 1 && host.Messages.empty());
 	CHECK(host.S.PeerCount() == 0);
+}
+
+TEST(SessionClientTheHostTimedOutLearnsItOverASilentTransport)
+{
+	for (const bool byeLost : { false, true })
+	{
+		FakeClock clock;
+		SteamWire wire;
+		wire.DropByesToClient = byeLost;
+		Node host(MakeParams(&clock));
+		Node a(MakeParams(&clock));
+		host.S.StartHost(std::make_unique<FakeSteam>(wire, true, clock), "Host");
+		a.S.StartClient(std::make_unique<FakeSteam>(wire, false, clock), "Ann");
+		auto step = [&](bool runClient)
+		{
+			clock.Advance(std::chrono::milliseconds(100));
+			host.Update();
+			if (runClient)
+			{
+				a.Update();
+			}
+		};
+		for (int i = 0; i < 10; i++)
+		{
+			step(true);
+		}
+		CHECK(a.S.Connected() && host.S.SeatedCount() == 2);
+
+		for (int i = 0; i < 70; i++)
+		{
+			step(false);
+		}
+		const Session::Event* left = host.Find(Kind::Left, 1);
+		CHECK(left && left->Leave == LeaveReason::TimedOut);
+
+		int steps = 0;
+		for (; steps < 100 && a.S.Active(); steps++)
+		{
+			step(true);
+		}
+		const Session::Event* lost = a.Find(Kind::Lost);
+		CHECK(lost && lost->Leave == LeaveReason::TimedOut && lost->Slot == 1);
+		CHECK(steps <= (byeLost ? 56 : 1));
+		CHECK(host.S.SeatedCount() == 1);
+	}
 }
 
 TEST(SessionNeverHandsALeaversMessagesToTheNextOccupant)
