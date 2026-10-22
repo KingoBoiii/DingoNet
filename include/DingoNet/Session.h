@@ -92,7 +92,8 @@ namespace Dingo::Net
 				Rejected,
 				// Client: the host is gone (Leave); the session has stopped. Slot is -1 if we were never seated.
 				Lost,
-				// Client: the host began a new epoch (Epoch); the queued game messages were dropped.
+				// Client: the host began a new epoch (Epoch); the queued game messages were dropped. A game's
+				// exhaustive switch over Kind needs a case for it or a default (-Wswitch).
 				EpochChanged
 			};
 
@@ -147,15 +148,21 @@ namespace Dingo::Net
 		// A slot's game messages never outlast its Left: those still queued when it goes move to the Left's
 		// LastMessages (a parting message sent just before a Stop arrives there), so none is ever read as the
 		// next occupant's.
+		// Take events before messages each frame: an EpochChanged comes before the new epoch's first messages
+		// of the same Update, so the game clears its mirror state before applying them.
 		std::vector<Event> TakeEvents() { return std::exchange(m_Events, {}); }
 		std::vector<Message> TakeMessages() { return std::exchange(m_Messages, {}); }
 
 		// Host with Epochs on: starts a new epoch. Every game message of the old one still in flight is dropped
-		// wherever it lands, clients get an EpochChanged and the queued ones are dropped here and there. Call it
-		// at each state change that old packets must not outlive, and when a peer rejoining under the same SteamID must not
-		// see its old traffic: that is the game's call. A client or Epochs off: a warning, nothing done.
+		// wherever it lands, clients get an EpochChanged and the queued ones are dropped here and there, those
+		// that arrived but were not taken yet included. So call BeginEpoch() first, then send the new state's
+		// messages (a RunOver that must arrive goes after it, in the new epoch): one sent before may be dropped.
+		// Call it at each state change that old packets must not outlive, and when a peer rejoining under the
+		// same SteamID must not see its old traffic: that is the game's call. A client or Epochs off: a warning,
+		// nothing done.
 		void BeginEpoch();
 		uint8_t GetEpoch() const { return m_Epoch; }
+		// Started: the host's setting (a client's from the Welcome). Otherwise, and after Stop, the params'.
 		bool EpochsOn() const { return m_EpochsOn; }
 		// Stamped packets dropped for another epoch since Start: normal traffic around a BeginEpoch.
 		uint64_t StaleDropped() const { return m_StaleDropped; }

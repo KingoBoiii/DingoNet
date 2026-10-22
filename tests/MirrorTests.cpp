@@ -343,6 +343,174 @@ TEST(MirrorClockRestartsWhenStampsJumpBack)
 	CHECK(clock.RenderTime() > 1.9 && clock.RenderTime() <= clock.HostNow());
 }
 
+namespace
+{
+
+	struct StallResult
+	{
+		bool Monotonic = true;
+		double Final = 0.0;
+		double Latest = 0.0;
+		int Restarts = 0;
+	};
+
+	StallResult RunStall(double stallSeconds, int backlogFrames, bool advanceFirst, double lateStampAt = -1.0, double lateBy = 0.0)
+	{
+		constexpr double STEP = 1.0 / 60.0;
+		constexpr int WARM = 120;
+		const int stall = static_cast<int>(stallSeconds * 60.0);
+		const int total = WARM + stall + backlogFrames + 240;
+
+		std::vector<std::vector<double>> arrivals(static_cast<size_t>(total));
+		int stalled = 0;
+		for (int frame = WARM; frame < WARM + stall; ++frame)
+		{
+			stalled += frame % 3 == 0 ? 1 : 0;
+		}
+		int index = 0;
+		for (int frame = 0; frame < total; frame += 3)
+		{
+			const double stamp = 100.0 + frame * STEP;
+			int arrival = frame;
+			if (frame >= WARM && frame < WARM + stall)
+			{
+				arrival = WARM + stall + index * backlogFrames / stalled;
+				++index;
+			}
+			arrivals[static_cast<size_t>(arrival)].push_back(stamp);
+			if (lateStampAt >= 0.0 && frame == static_cast<int>(lateStampAt * 60.0))
+			{
+				arrivals[static_cast<size_t>(frame)].push_back(stamp - lateBy);
+			}
+		}
+
+		RenderClock clock;
+		StallResult result;
+		double previous = -1.0e300;
+		for (int frame = 0; frame < total; ++frame)
+		{
+			if (advanceFirst)
+			{
+				clock.Advance(STEP);
+			}
+			for (double stamp : arrivals[static_cast<size_t>(frame)])
+			{
+				clock.OnSnapshot(stamp);
+			}
+			if (!advanceFirst)
+			{
+				clock.Advance(STEP);
+			}
+			if (clock.HasTime())
+			{
+				result.Monotonic = result.Monotonic && clock.RenderTime() >= previous;
+				previous = clock.RenderTime();
+			}
+		}
+		result.Final = clock.RenderTime();
+		result.Latest = clock.LatestStamp();
+		result.Restarts = clock.Restarts();
+		return result;
+	}
+
+}
+
+TEST(MirrorClockNetworkStallBacklogNeverMovesRenderBack)
+{
+	for (const bool advanceFirst : { false, true })
+	{
+		for (const int backlogFrames : { 1, 3, 6 })
+		{
+			const StallResult r = RunStall(0.8, backlogFrames, advanceFirst);
+			CHECK(r.Monotonic);
+			CHECK(r.Restarts == 0);
+			CHECK(std::fabs(r.Final - (r.Latest - 0.1)) < 0.15);
+		}
+	}
+}
+
+TEST(MirrorClockSingleLateStampIsIgnored)
+{
+	for (const bool advanceFirst : { false, true })
+	{
+		const StallResult r = RunStall(0.0, 1, advanceFirst, 3.0, 0.6);
+		CHECK(r.Monotonic);
+		CHECK(r.Restarts == 0);
+	}
+}
+
+TEST(MirrorClockHoldsThenCatchesUpWhenAheadOfTargetWithinRewindError)
+{
+	RenderClock clock;
+	clock.OnSnapshot(10.0);
+	for (int i = 0; i < 90; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+	}
+	const double before = clock.RenderTime();
+	clock.OnSnapshot(10.05);
+	double previous = before;
+	bool monotonic = true;
+	for (int i = 0; i < 30; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+		monotonic = monotonic && clock.RenderTime() >= previous;
+		previous = clock.RenderTime();
+	}
+	CHECK(monotonic);
+	CHECK(Near(clock.RenderTime(), before, 1e-9));
+	for (int i = 0; i < 240; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+		monotonic = monotonic && clock.RenderTime() >= previous;
+		previous = clock.RenderTime();
+	}
+	CHECK(monotonic);
+	CHECK(clock.RenderTime() > before);
+}
+
+TEST(MirrorClockRewindsWhenFarAheadOfTarget)
+{
+	RenderClock clock;
+	clock.OnSnapshot(10.0);
+	for (int i = 0; i < 600; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+	}
+	clock.OnSnapshot(10.05);
+	clock.Advance(1.0 / 60.0);
+	CHECK(std::fabs(clock.RenderTime() - (10.05 - 0.1)) < 0.05);
+	CHECK(clock.Restarts() == 0);
+}
+
+TEST(MirrorClockSettleAfterAGapHoldsRenderTime)
+{
+	RenderClock clock;
+	clock.OnSnapshot(10.0);
+	for (int i = 0; i < 30; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+	}
+	const double before = clock.RenderTime();
+	CHECK(before > 10.0);
+	clock.Settle();
+	for (int i = 0; i < 120; ++i)
+	{
+		clock.Advance(1.0 / 60.0);
+		CHECK(clock.RenderTime() >= before);
+	}
+	CHECK(Near(clock.RenderTime(), before));
+
+	RenderClock behind;
+	behind.OnSnapshot(10.0);
+	behind.Settle();
+	for (int i = 0; i < 120; ++i)
+	{
+		behind.Advance(1.0 / 60.0);
+	}
+	CHECK(Near(behind.RenderTime(), 10.0));
+}
+
 TEST(MirrorClockClampsHugeDt)
 {
 	RenderClock clock;

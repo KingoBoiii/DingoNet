@@ -129,6 +129,7 @@ namespace Dingo::Net
 			params.PingInterval = params.Timeout / 2.0;
 		}
 		m_Params = std::move(params);
+		m_EpochsOn = m_Params.Epochs;
 		m_Seats.assign(static_cast<size_t>(m_Params.MaxSlots), Seat{});
 	}
 
@@ -200,6 +201,7 @@ namespace Dingo::Net
 		m_Peers.clear();
 		m_Seats.assign(static_cast<size_t>(m_Params.MaxSlots), Seat{});
 		m_LocalSlot = -1;
+		m_EpochsOn = m_Params.Epochs;
 	}
 
 	void Session::Kick(int slot)

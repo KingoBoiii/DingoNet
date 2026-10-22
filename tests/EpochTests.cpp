@@ -737,3 +737,80 @@ TEST(EpochMaxUnreliablePayloadIs1098WithEpochsOn)
 	rig.Host.S.SetRouter(nullptr);
 	a.S.SetRouter(nullptr);
 }
+
+TEST(EpochMessageSentBeforeBeginEpochIsDroppedAndOneSentAfterIsDelivered)
+{
+	Rig rig(true);
+	Node& a = rig.Join("Ann", true);
+	rig.Settle();
+	rig.Host.Lag(0.05);
+	rig.ClearAll();
+
+	rig.Host.S.Send(1, Game(0x40, 1), Delivery::Reliable);
+	rig.Host.S.BeginEpoch();
+	rig.Step(20);
+	CHECK(!HasMessage(a, 0, Game(0x40, 1)));
+	CHECK(a.Count(Kind::EpochChanged) == 1);
+
+	rig.Host.S.BeginEpoch();
+	rig.Host.S.Send(1, Game(0x41, 2), Delivery::Reliable);
+	rig.Step(20);
+	int delivered = 0;
+	for (const Session::Message& m : a.Messages)
+	{
+		delivered += m.Data == Game(0x41, 2) ? 1 : 0;
+	}
+	CHECK(delivered == 1);
+	CHECK(a.Count(Kind::EpochChanged) == 2);
+}
+
+TEST(EpochTakingEventsBeforeMessagesKeepsTheNewEpochsFirstMessage)
+{
+	Rig rig(true);
+	Node& a = rig.Join("Ann", true);
+	rig.Settle();
+	rig.ClearAll();
+
+	std::vector<Bytes> mirror = { Game(0x50, 9) };
+	rig.Host.S.BeginEpoch();
+	rig.Host.S.Send(1, Game(0x51, 1), Delivery::Reliable);
+	rig.Time.Now += std::chrono::milliseconds(10);
+	a.S.Update();
+	for (const Session::Event& e : a.S.TakeEvents())
+	{
+		if (e.Type == Kind::EpochChanged)
+		{
+			mirror.clear();
+		}
+	}
+	for (Session::Message& m : a.S.TakeMessages())
+	{
+		mirror.push_back(std::move(m.Data));
+	}
+	CHECK(mirror.size() == 1 && mirror[0] == Game(0x51, 1));
+}
+
+TEST(EpochMaxUnreliablePayloadFollowsTheParamsBeforeStart)
+{
+	Clock clock;
+	Session on(MakeParams(clock, true));
+	Session off(MakeParams(clock, false));
+	CHECK(on.MaxUnreliablePayload() == 1098);
+	CHECK(off.MaxUnreliablePayload() == 1100);
+	on.StartHost(LoopbackTransport::Listen(), "Host");
+	CHECK(on.MaxUnreliablePayload() == 1098);
+	on.Stop();
+	CHECK(on.MaxUnreliablePayload() == 1098);
+	CHECK(on.EpochsOn() && !off.EpochsOn());
+}
+
+TEST(EpochClientAfterStopFollowsItsOwnParamsAgain)
+{
+	Rig rig(true);
+	Node& a = rig.Join("Ann", false);
+	CHECK(!a.S.EpochsOn() && a.S.MaxUnreliablePayload() == 1100);
+	rig.Settle();
+	CHECK(a.S.EpochsOn() && a.S.MaxUnreliablePayload() == 1098);
+	a.S.Stop();
+	CHECK(!a.S.EpochsOn() && a.S.MaxUnreliablePayload() == 1100);
+}

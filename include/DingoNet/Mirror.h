@@ -42,11 +42,18 @@ namespace Dingo::Net
 		double CatchUp = 0.25;
 		double SnapError = 0.5;
 		double MaxDt = 0.25;
+		double RewindError = 2.0;
+		double RestartError = 2.0;
 	};
 
 	// Samples, steps and events carry no era: the game clears its Tracks, Timelines and EventQueues
 	// at an epoch change or run start, and calls RenderClock::Reset() there (a stamp that jumps back
-	// by more than SnapError restarts the clock by itself, see Restarts()).
+	// by more than RestartError restarts the clock by itself, see Restarts()). Render time goes back only
+	// then, or when it is ahead of its target by more than RewindError; a smaller overshoot (network delay
+	// whose backlog is still arriving) holds it until the target catches up. A hold begins beyond the slew
+	// band, MaxSlew * CatchUp (0.025 s) ahead of the target. HostNow() can resync down to a newer stamp more than
+	// SnapError behind it, so RenderTime() can sit ahead of HostNow() while held. Keep RewindError at most
+	// TracksParams::Stale.
 	class RenderClock
 	{
 	public:
@@ -74,7 +81,7 @@ namespace Dingo::Net
 				m_Render = hostTime - m_Params.Delay;
 				return;
 			}
-			if (hostTime < m_Latest - m_Params.SnapError)
+			if (hostTime < m_Latest - m_Params.RestartError)
 			{
 				m_Latest = hostTime;
 				m_Estimate = hostTime;
@@ -91,9 +98,7 @@ namespace Dingo::Net
 				m_Settled = false;
 				if (m_Estimate - hostTime > m_Params.SnapError)
 				{
-					// The one case where render time goes backwards: holding seconds ahead of the host is worse.
 					m_Estimate = hostTime;
-					m_Render = hostTime - m_Params.Delay;
 				}
 				else
 				{
@@ -115,7 +120,6 @@ namespace Dingo::Net
 			if (m_Settled)
 			{
 				m_Estimate = m_Latest;
-				m_Render = (std::min)(m_Render, m_Latest);
 			}
 			else
 			{
@@ -126,9 +130,13 @@ namespace Dingo::Net
 
 			const double target = m_Settled ? m_Latest : m_Estimate - m_Params.Delay;
 			const double error = target - m_Render;
-			if (error > m_Params.SnapError)
+			if (error > m_Params.SnapError || (!m_Settled && error < -m_Params.RewindError))
 			{
 				m_Render = target;
+				return;
+			}
+			if (error < -m_Params.MaxSlew * catchUp)
+			{
 				return;
 			}
 			const double slew = (std::clamp)(error / catchUp, -m_Params.MaxSlew, m_Params.MaxSlew);
@@ -142,6 +150,7 @@ namespace Dingo::Net
 		double LatestStamp() const { return m_Started ? m_Latest : 0.0; }
 		int Restarts() const { return m_Restarts; }
 
+		// Render time moves forward to the latest stamp and stops there, or holds if already past it.
 		void Settle()
 		{
 			if (m_Started)
