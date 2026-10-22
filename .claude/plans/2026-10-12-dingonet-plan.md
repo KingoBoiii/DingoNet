@@ -466,6 +466,13 @@ double t)` (found by ADL) and, for extrapolation, `Extrapolate(const T& a, const
   samples, `Settle`, due events, and a jittered 20 Hz feed whose rendered path never steps more than
   a set bound. That last one is the same check as Headstone's `ProbeMirrorSmoothness`.
 
+**As built** (2026-10-22): `include/DingoNet/Mirror.h`, `tests/MirrorTests.cpp` (25 tests; suite 135).
+- `Timeline<T>` holds the stepped values only; timed events are `EventQueue<E>` (`Schedule`, `TakeDue`).
+- `RenderClockParams`: `Delay` 0.1, `MaxSlew` 0.1, `CatchUp` 0.25, `SnapError` 0.5, `MaxDt` 0.25. `TracksParams`: `MaxExtrapolate` 0.15, `Stale` 2.0, `History` 1.0, `MinExtrapolateGap` 0.001.
+- `RenderClock`: `OnSnapshot`, `Advance(dt)` (dt clamped), `HostNow`, `RenderTime`, `LatestStamp`, `HasTime`, `Settle`, `Reset`, `Restarts`. `HostNow` is an estimate that jumps up to a newer stamp and eases down at most `MaxSlew`; render time slews at `1 ± MaxSlew`, snaps forward past `SnapError`, never passes `HostNow`. It goes back only on a stall resync (newer stamp, `HostNow` more than `SnapError` ahead) and on a restart (stamp more than `SnapError` behind the latest). `Settle` holds `HostNow` and render at the latest stamp until a newer one. No gap-length threshold: the clock runs through gaps.
+- `Tracks<Key, T, Hash>` and `Timeline` trim explicitly (`Trim(renderTime)`); `Keys()` plus `ForEach`; `Extrapolates` constant; `Interpolate`/`Extrapolate` by ADL with `double` overloads; no `Extrapolate` or no earlier sample `MinExtrapolateGap` back means hold.
+- Eras are the game's job: clear Tracks, Timeline and EventQueue and `Reset()` the clock at an epoch change or run start.
+
 ### Phase 4 — release v0.2.0 (~1 h)
 
 - An Opus review of the whole v0.2 diff before the tag, with its findings fixed.
