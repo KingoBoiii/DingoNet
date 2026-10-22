@@ -23,8 +23,10 @@ namespace Dingo::Net
 		using Log = std::function<void(LogLevel level, std::string_view message)>;
 
 		// Host (host = 0): waits for allowed users to reach out. Client: talks to `host`, the lobby
-		// owner. Returns null when `messages` is null. Destroy (or Close) the transport before
-		// SteamAPI_Shutdown(), or pass `isAlive`: Close makes no Steam call while it returns false.
+		// owner. Returns null when `messages` is null or `isAlive` says no. Destroy (or Close) the
+		// transport before SteamAPI_Shutdown(), or pass `isAlive`: while it returns false, no call
+		// reaches Steam (Send and Poll do nothing). Its Steam callbacks still unregister when it is
+		// destroyed. After Close it is inert, as TCP's is: Send, Poll and Disconnect do nothing.
 		static std::unique_ptr<SteamTransport> Create(ISteamNetworkingMessages* messages, uint64_t host, Allowed allowed, Log log = {}, std::function<bool()> isAlive = {});
 		~SteamTransport() override;
 

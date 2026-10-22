@@ -69,10 +69,16 @@ namespace Dingo::Net
 		std::unordered_set<uint64_t> Peers;
 		std::vector<PeerEvent> Pending;
 		bool Announced = false;
+		bool Closed = false;
 
 		bool Alive() const
 		{
 			return !IsAlive || IsAlive();
+		}
+
+		bool Usable() const
+		{
+			return !Closed && Alive();
 		}
 
 		void Say(LogLevel level, const std::string& message) const
@@ -86,6 +92,7 @@ namespace Dingo::Net
 
 	void SteamTransport::Impl::OnSessionRequest(SteamNetworkingMessagesSessionRequest_t* request)
 	{
+		if (Closed) return;
 		const uint64_t from = request->m_identityRemote.GetSteamID64();
 		if (Host != 0 ? from == Host : (Allow && Allow(from)))
 			Messages->AcceptSessionWithUser(request->m_identityRemote);
@@ -107,7 +114,7 @@ namespace Dingo::Net
 
 	std::unique_ptr<SteamTransport> SteamTransport::Create(ISteamNetworkingMessages* messages, uint64_t host, Allowed allowed, Log log, std::function<bool()> isAlive)
 	{
-		if (!messages) return nullptr;
+		if (!messages || (isAlive && !isAlive())) return nullptr;
 
 		// Steam sessions outlive a transport, so the shared queue may still hold the last game's messages.
 		SteamNetworkingMessage_t* stale[64];
@@ -137,7 +144,7 @@ namespace Dingo::Net
 
 	void SteamTransport::Send(PeerId to, std::span<const uint8_t> data, Delivery delivery)
 	{
-		if (!m_Impl) return;
+		if (!m_Impl || !m_Impl->Usable()) return;
 		if (delivery == Delivery::Unreliable && data.size() > MAX_UNRELIABLE_BYTES)
 		{
 			m_Impl->Say(LogLevel::Error, std::format("dropped an unreliable packet of {} bytes (max {})", data.size(), MAX_UNRELIABLE_BYTES));
@@ -161,7 +168,7 @@ namespace Dingo::Net
 
 	void SteamTransport::Poll(std::vector<Packet>& packets, std::vector<PeerEvent>& events)
 	{
-		if (!m_Impl) return;
+		if (!m_Impl || !m_Impl->Usable()) return;
 		Impl& impl = *m_Impl;
 
 		if (impl.Host != 0 && !impl.Announced)
@@ -212,18 +219,21 @@ namespace Dingo::Net
 	void SteamTransport::Disconnect(PeerId peer)
 	{
 		// The Steam session is left to idle out: closing it now could drop a parting Bye still on its way.
-		if (!m_Impl) return;
+		if (!m_Impl || m_Impl->Closed) return;
 		m_Impl->Peers.erase(peer);
 		m_Impl->Recent[peer] = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 	}
 
 	void SteamTransport::Close()
 	{
-		if (!m_Impl) return;
+		if (!m_Impl || m_Impl->Closed) return;
+		m_Impl->Closed = true;
 		if (m_Impl->Alive())
 			for (uint64_t peer : m_Impl->Peers)
 				m_Impl->Messages->CloseSessionWithUser(Identity(peer));
 		m_Impl->Peers.clear();
+		m_Impl->Recent.clear();
+		m_Impl->Pending.clear();
 	}
 
 	std::string SteamTransport::Describe() const

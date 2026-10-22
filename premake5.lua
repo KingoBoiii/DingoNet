@@ -79,6 +79,8 @@ project "DingoNet-Tests"
 		"tests/**.cpp"
 	}
 
+	removefiles { "tests/steam/**" }
+
 	includedirs
 	{
 		"include",
@@ -86,3 +88,43 @@ project "DingoNet-Tests"
 	}
 
 	links { "DingoNet" }
+
+newoption
+{
+	trigger = "steam-sdk",
+	value = "PATH",
+	description = "Steamworks SDK root (holding public/): adds DingoNet-SteamTests"
+}
+
+if _OPTIONS["steam-sdk"] then
+	project "DingoNet-SteamTests"
+		kind "ConsoleApp"
+		location "tests"
+		targetdir ("%{wks.location}/build/bin/" .. outputdir .. "/%{prj.name}")
+		objdir ("%{wks.location}/build/bin-int/" .. outputdir .. "/%{prj.name}")
+
+		files
+		{
+			"steam/SteamTransport.h",
+			"steam/SteamTransport.cpp",
+			"tests/steam/**.cpp",
+			"tests/*.h",
+			"tests/Main.cpp",
+			"tests/NetCheck.cpp"
+		}
+
+		includedirs
+		{
+			"include",
+			"src",
+			"steam",
+			"tests"
+		}
+
+		externalincludedirs { path.join(path.getabsolute(_OPTIONS["steam-sdk"]), "public") }
+		externalwarnings "Off"
+		-- The tests stand in for steam_api's callback registration, so nothing links the SDK's library.
+		defines { "STEAM_API_NODLL" }
+
+		links { "DingoNet" }
+end
