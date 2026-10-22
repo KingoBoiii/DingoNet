@@ -103,6 +103,8 @@ namespace Dingo::Net
 			Dingo::Net::DisconnectReason Transport = Dingo::Net::DisconnectReason::Closed;
 			// Joined on a client: already seated when we were welcomed, not a new arrival.
 			bool Existing = false;
+			// Left on the host: the seat's game messages that were still queued when it went, oldest first.
+			std::vector<std::vector<uint8_t>> LastMessages;
 			// For logs only: the transport's words, or both sides' versions on a reject.
 			std::string Detail;
 		};
@@ -133,8 +135,9 @@ namespace Dingo::Net
 		void Kick(int slot);
 
 		void Update();
-		// A slot's game messages never outlast its Left: those still queued when it goes are dropped, so none
-		// is ever read as the next occupant's.
+		// A slot's game messages never outlast its Left: those still queued when it goes move to the Left's
+		// LastMessages (a parting message sent just before a Stop arrives there), so none is ever read as the
+		// next occupant's.
 		std::vector<Event> TakeEvents() { return std::exchange(m_Events, {}); }
 		std::vector<Message> TakeMessages() { return std::exchange(m_Messages, {}); }
 

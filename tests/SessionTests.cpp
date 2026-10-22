@@ -1174,6 +1174,7 @@ TEST(SessionNeverHandsALeaversMessagesToTheNextOccupant)
 	CHECK(host.Events.size() == 2 && host.Events[0].Type == Kind::Left && host.Events[0].Name == "Ann" && host.Events[1].Type == Kind::Joined
 		&& host.Events[1].Slot == 1 && host.Events[1].Name == "Bo");
 	CHECK(host.Messages.size() == 1 && host.Messages[0].Slot == 1 && host.Messages[0].Data == Bytes({ 0x10, 'n' }));
+	CHECK(host.Events.size() == 2 && host.Events[0].LastMessages == std::vector<Bytes>({ { 0x10, 'o' } }) && host.Events[1].LastMessages.empty());
 
 	script->Packets.push_back({ 8, { 0x10, 'x' } });
 	host.S.Update();
@@ -1181,6 +1182,7 @@ TEST(SessionNeverHandsALeaversMessagesToTheNextOccupant)
 	CHECK(host.S.TakeMessages().empty());
 	const std::vector<Session::Event> events = host.S.TakeEvents();
 	CHECK(events.size() == 1 && events[0].Type == Kind::Left && events[0].Leave == LeaveReason::Kicked);
+	CHECK(events.size() == 1 && events[0].LastMessages == std::vector<Bytes>({ { 0x10, 'x' } }));
 }
 
 TEST(SessionRateLimitsWarningsAndHangsUpOnABadPeer)
@@ -1274,4 +1276,26 @@ TEST(SessionLetsTheGameAnswerAnOlderWire)
 	CHECK(lan.Host->S.PeerCount() == 0 && lan.Host->Events.empty());
 	CHECK(e.Packets.size() == 1 && e.Packets[0].Data == Bytes({ 0x42, 'o', 'l', 'd' }));
 	CHECK(e.Has(PeerEvent::Kind::Disconnected));
+}
+
+TEST(SessionHandsTheHostAPartingMessageOnTheLeft)
+{
+	Lan lan(MakeParams(nullptr));
+	Node& a = lan.Join("Ann");
+	lan.Pump();
+	Node& b = lan.Join("Bo");
+	lan.Pump();
+	lan.Host->Clear();
+
+	a.S.Send(0, Bytes({ 0x30, 1 }), Delivery::Reliable);
+	a.S.Send(0, Bytes({ 0x30, 2 }), Delivery::Reliable);
+	a.S.Stop();
+	b.S.Send(0, Bytes({ 0x31 }), Delivery::Reliable);
+	lan.Pump();
+
+	const Session::Event* left = lan.Host->Find(Kind::Left, 1);
+	CHECK(left && left->Leave == LeaveReason::Bye && left->LastMessages == std::vector<Bytes>({ { 0x30, 1 }, { 0x30, 2 } }));
+	CHECK(lan.Host->Messages.size() == 1 && lan.Host->Messages[0].Slot == 2 && lan.Host->Messages[0].Data == Bytes({ 0x31 }));
+	const Session::Event* seen = b.Find(Kind::Left, 1);
+	CHECK(seen && seen->LastMessages.empty());
 }

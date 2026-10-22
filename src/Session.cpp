@@ -754,12 +754,19 @@ namespace Dingo::Net
 
 	void Session::VacateSeat(int slot, LeaveReason reason, std::string detail, DisconnectReason transport)
 	{
-		std::erase_if(m_Messages, [slot](const Message& m) { return m.Slot == slot; });
 		std::string name = std::move(m_Seats[slot].Name);
 		m_Seats[slot] = {};
 		SendToSeated(Encode(SeatLeftMessage{ static_cast<uint8_t>(slot), reason }), -1);
 		Event left = MakeEvent(Event::Kind::Left, slot, std::move(name), reason, std::move(detail));
 		left.Transport = transport;
+		for (Message& m : m_Messages)
+		{
+			if (m.Slot == slot)
+			{
+				left.LastMessages.push_back(std::move(m.Data));
+			}
+		}
+		std::erase_if(m_Messages, [slot](const Message& m) { return m.Slot == slot; });
 		m_Events.push_back(std::move(left));
 	}
 
