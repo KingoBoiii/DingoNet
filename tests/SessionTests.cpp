@@ -1299,3 +1299,85 @@ TEST(SessionHandsTheHostAPartingMessageOnTheLeft)
 	const Session::Event* seen = b.Find(Kind::Left, 1);
 	CHECK(seen && seen->LastMessages.empty());
 }
+
+TEST(SessionOverTcpSeatsAFullSessionAndTurnsTheNextAwayAsFull)
+{
+	std::string error;
+	std::unique_ptr<TcpTransport> listen = TcpTransport::Listen("127.0.0.1", 0, error);
+	CHECK(listen != nullptr);
+	if (!listen)
+	{
+		return;
+	}
+	const uint16_t port = listen->GetPort();
+	Node host(MakeParams(nullptr, MAX_SESSION_SLOTS));
+	host.S.StartHost(std::move(listen), "Host");
+
+	std::vector<std::unique_ptr<Node>> clients;
+	for (int i = 0; i < MAX_SESSION_SLOTS; i++)
+	{
+		clients.push_back(std::make_unique<Node>(MakeParams(nullptr, MAX_SESSION_SLOTS)));
+		Node& c = *clients.back();
+		c.S.StartClient(TcpTransport::Connect("127.0.0.1", port, error), "C" + std::to_string(i));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+		while (c.Events.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			host.Update();
+			c.Update();
+			std::this_thread::yield();
+		}
+	}
+
+	CHECK(host.S.SeatedCount() == MAX_SESSION_SLOTS);
+	int welcomed = 0;
+	for (int i = 0; i + 1 < MAX_SESSION_SLOTS; i++)
+	{
+		welcomed += clients[static_cast<size_t>(i)]->Find(Kind::Welcomed) ? 1 : 0;
+	}
+	CHECK(welcomed == MAX_SESSION_SLOTS - 1);
+	const Session::Event* full = clients.back()->Find(Kind::Rejected);
+	CHECK(full && full->Rejection == RejectReason::Full);
+	CHECK(clients.back()->Count(Kind::Lost) == 0);
+}
+
+TEST(SessionIdleConnectionsCannotLockJoinersOut)
+{
+	LogCapture log;
+	std::string error;
+	std::unique_ptr<TcpTransport> listen = TcpTransport::Listen("127.0.0.1", 0, error);
+	CHECK(listen != nullptr);
+	if (!listen)
+	{
+		return;
+	}
+	const uint16_t port = listen->GetPort();
+	Node host(MakeParams(nullptr));
+	host.S.StartHost(std::move(listen), "Host");
+
+	std::vector<std::unique_ptr<TcpTransport>> idle;
+	for (int i = 0; i < 70; i++)
+	{
+		idle.push_back(TcpTransport::Connect("127.0.0.1", port, error));
+		Endpoint e{ idle.back().get() };
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+		while (!e.Has(PeerEvent::Kind::Connected) && !e.Has(PeerEvent::Kind::Disconnected) && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::yield();
+			e.Poll();
+		}
+		host.Update();
+	}
+	CHECK(host.S.PeerCount() <= 16);
+
+	Node a(MakeParams(nullptr));
+	a.S.StartClient(TcpTransport::Connect("127.0.0.1", port, error), "Ann");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+	while (a.Events.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		host.Update();
+		a.Update();
+		std::this_thread::yield();
+	}
+	CHECK(a.Find(Kind::Welcomed, 1) && a.S.Connected());
+	CHECK(host.S.SeatedCount() == 2 && host.S.PeerCount() <= 17);
+}

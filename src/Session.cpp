@@ -19,6 +19,8 @@ namespace Dingo::Net
 		// A host hangs up on a peer after this many bad session packets.
 		constexpr int MAX_BAD_PACKETS = 32;
 		constexpr size_t MAX_BUILD_LENGTH = 64;
+		// TcpParams::MaxConnections leaves room for a full session's clients plus this many.
+		constexpr int MAX_HANDSHAKES = 16;
 
 		double PositiveSeconds(double value, double fallback)
 		{
@@ -285,6 +287,14 @@ namespace Dingo::Net
 		{
 			LogWarn("session: a client's transport reported a second peer ({}); ignored", id);
 			return;
+		}
+		if (m_IsHost && std::count_if(m_Peers.begin(), m_Peers.end(), [](const Peer& p) { return p.Slot < 0; }) >= MAX_HANDSHAKES)
+		{
+			// The oldest goes, not the newest: idle connections must not hold the transport's cap against joiners.
+			const auto oldest = std::find_if(m_Peers.begin(), m_Peers.end(), [](const Peer& p) { return p.Slot < 0; });
+			LogInfo("session: hung up on peer {}: {} connections were already waiting to say Hello", oldest->Id, MAX_HANDSHAKES);
+			m_Transport->Disconnect(oldest->Id);
+			m_Peers.erase(oldest);
 		}
 		m_Peers.push_back({ id, -1, now, now, 0, 0 });
 		if (!m_IsHost)
