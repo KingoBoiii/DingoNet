@@ -22,6 +22,8 @@ namespace Dingo::Net
 	namespace
 	{
 		constexpr int CHANNEL = 0;
+		// A Session's Hello: only a new session starts with it, never a packet still in flight from the one we let go.
+		constexpr uint8_t SESSION_HELLO = 0xF0;
 
 		SteamNetworkingIdentity Identity(uint64_t steamId)
 		{
@@ -194,6 +196,7 @@ namespace Dingo::Net
 			{
 				SteamNetworkingMessage_t* m = messages[i];
 				const uint64_t from = m->m_identityPeer.GetSteamID64();
+				if (m->m_cbSize > 0 && static_cast<const uint8_t*>(m->m_pData)[0] == SESSION_HELLO) impl.Recent.erase(from);
 				const bool known = impl.Peers.contains(from);
 				const bool welcome = !impl.Recent.contains(from) && (impl.Host != 0 ? from == impl.Host : (known || (impl.Allow && impl.Allow(from))));
 				if (welcome)

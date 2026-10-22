@@ -18,3 +18,6 @@ and CI never touch this folder; generating with `--steam-sdk=<SDK root>` adds
   and `Disconnect` do nothing.
 - Lobby code stays in the game. Peers are SteamIDs. Needs C++20. Pump `Poll` once a frame, from
   the thread that runs `SteamAPI_RunCallbacks()`.
+- After `Disconnect` a peer's messages are dropped for 1 s, so packets still in flight don't
+  bring it back as a new connection; a session `Hello` (first byte `0xF0`) ends that early, so a
+  client that rejoins the moment it is kicked or timed out gets in.

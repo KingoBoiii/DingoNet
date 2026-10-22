@@ -348,3 +348,29 @@ TEST(SteamTransportIsInertAfterClose)
 	u->Close();
 	CHECK(steam.Closed == std::vector<uint64_t>({ ANN }));
 }
+
+TEST(SteamTransportLetsANewSessionsHelloThroughTheIgnoreWindow)
+{
+	FakeMessages steam;
+	auto t = SteamTransport::Create(&steam, 0, &AnnAllowed);
+	CHECK(t != nullptr);
+	if (!t)
+	{
+		return;
+	}
+	steam.Inbox.push_back({ ANN, { 1 } });
+	Polled p;
+	p.From(*t);
+	t->Disconnect(ANN);
+
+	steam.Inbox.push_back({ ANN, { 2 } });
+	p.From(*t);
+	CHECK(p.Packets.empty() && p.Events.empty());
+
+	const Bytes hello = Hello("Ann");
+	steam.Inbox.push_back({ ANN, hello });
+	steam.Inbox.push_back({ ANN, { 3 } });
+	p.From(*t);
+	CHECK(p.Events.size() == 1 && p.Events[0].Type == Kind::Connected && p.Events[0].Peer == ANN);
+	CHECK(p.Packets.size() == 2 && p.Packets[0].Data == hello && p.Packets[1].Data == Bytes({ 3 }));
+}

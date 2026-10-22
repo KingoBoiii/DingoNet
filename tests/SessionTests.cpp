@@ -272,7 +272,7 @@ namespace
 	};
 
 	// SteamTransport's semantics between one host and one client: Disconnect is silent on the wire, a
-	// disconnected peer is ignored for 1 s, then whatever it sends makes it a new connection.
+	// disconnected peer is ignored for 1 s unless it says Hello, then whatever it sends makes it a new connection.
 	class FakeSteam final : public Transport
 	{
 	public:
@@ -303,6 +303,10 @@ namespace
 			const PeerId from = m_Host ? CLIENT : HOST;
 			for (; !in.empty(); in.pop_front())
 			{
+				if (!in.front().empty() && in.front()[0] == 0xF0)
+				{
+					m_Ignored.erase(from);
+				}
 				if (m_Ignored.contains(from))
 				{
 					continue;
@@ -1433,4 +1437,42 @@ TEST(SessionLetsAJoinerInThroughAConnectionFlood)
 	}
 	CHECK(oldestSilentWent);
 	CHECK(host.S.PeerCount() == 2 + 16);
+}
+
+TEST(SessionTakesBackAClientThatRejoinsTheMomentItIsTimedOut)
+{
+	FakeClock clock;
+	SteamWire wire;
+	Node host(MakeParams(&clock));
+	Node a(MakeParams(&clock));
+	host.S.StartHost(std::make_unique<FakeSteam>(wire, true, clock), "Host");
+	a.S.StartClient(std::make_unique<FakeSteam>(wire, false, clock), "Ann");
+	auto step = [&](bool runClient)
+	{
+		clock.Advance(std::chrono::milliseconds(100));
+		host.Update();
+		if (runClient)
+		{
+			a.Update();
+		}
+	};
+	for (int i = 0; i < 10; i++)
+	{
+		step(true);
+	}
+	for (int i = 0; i < 53; i++)
+	{
+		step(false);
+	}
+	CHECK(host.Find(Kind::Left, 1) && host.Find(Kind::Left, 1)->Leave == LeaveReason::TimedOut);
+
+	step(true);
+	CHECK(a.Find(Kind::Lost) && a.Find(Kind::Lost)->Leave == LeaveReason::TimedOut);
+	a.Clear();
+	a.S.StartClient(std::make_unique<FakeSteam>(wire, false, clock), "Ann");
+	for (int i = 0; i < 3; i++)
+	{
+		step(true);
+	}
+	CHECK(a.Find(Kind::Welcomed, 1) && a.S.Connected() && host.S.SeatedCount() == 2);
 }
