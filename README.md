@@ -4,7 +4,7 @@ A small cross-platform C++20 netcode library: byte serialization, transports (TC
 
 ## Status
 
-v0.1 (Extract) is released (`v0.1.1`). v0.2 (Structure) adds `Messages.h` (typed messages and a `MessageRouter` with per-message stats), session epochs (`SessionParams::Epochs`, `BeginEpoch`; session protocol 2, so v0.2 and v0.1 sessions turn each other away) and `Mirror.h` (`RenderClock`, `Tracks`, `Timeline`, `EventQueue`). See `.claude/plans/2026-10-12-dingonet-plan.md`.
+v0.1 (Extract) is released (`v0.1.1`). v0.2 (Structure) is released (`v0.2.0`): it adds `Messages.h` (typed messages and a `MessageRouter` with per-message stats), session epochs (`SessionParams::Epochs`, `BeginEpoch`; session protocol 2, so v0.2 and v0.1 sessions turn each other away) and `Mirror.h` (`RenderClock`, `Tracks`, `Timeline`, `EventQueue`). See `.claude/plans/2026-10-12-dingonet-plan.md`.
 
 ## Platforms
 
