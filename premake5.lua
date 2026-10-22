@@ -43,6 +43,8 @@ workspace "DingoNet"
 
 project "DingoNet"
 	kind "StaticLib"
+	-- A game or engine module may link the library into a shared object.
+	pic "On"
 	targetdir ("%{wks.location}/build/bin/" .. outputdir .. "/%{prj.name}")
 	objdir ("%{wks.location}/build/bin-int/" .. outputdir .. "/%{prj.name}")
 
