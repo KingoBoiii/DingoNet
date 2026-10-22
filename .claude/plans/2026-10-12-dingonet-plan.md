@@ -87,7 +87,7 @@ build), `Net/Mirror.*` until v0.2 makes it generic.
 | Version | Scope | Done when |
 |---|---|---|
 | **v0.1 Extract** | Bytes, Transport, TCP (Winsock + POSIX), Loopback, Conditioner, Session (configurable), Steam as a source drop, Windows and Linux packages + CI | Headstone runs on the package with no gameplay change; its net tests and a 2-instance soak pass; DingoNet-Tests pass on both OSes, a Windows host and a Linux client included |
-| v0.2 Structure | Message registry (replaces the dispatch `switch`), session epoch, generic `Mirror<T>` interpolation | `HeadstoneNet.cpp` roughly halves |
+| v0.2 Structure | Message registry (replaces the dispatch `switch`), session epoch, generic `Mirror<T>` interpolation | Headstone dispatches through the registry, has no hand-written stale-packet guards, and builds its mirror on the toolkit |
 | v0.3 UDP | Reliable-UDP transport (ENet proposed) | LAN play over UDP without Steam, on Windows and Linux |
 | v0.4 Engine bridge | `DingoNet-Engine`: `NetLayer`, UUID-keyed scene replication (`IDComponent`, `Scene::GetEntityByUUID`, `Scene.h:208`) | 2–4 player co-op retrofitted onto a second example (the roadmap showcase) |
 | v1.0 Module | Packaged as an optional engine module, documented | Listed under the engine roadmap's Modules |
@@ -343,6 +343,144 @@ day plus the manual two-machine Steam check.
 wire change — high-risk netcode); Sonnet for phases 1, 2 and 5; an Opus review of the v0.1 diff
 before the first tag.
 
+## v0.2 — Structure (planned 2026-10-22)
+
+Three engine-free pieces, each from a pattern Headstone hand-rolls today. All are opt-in, so a game on
+v0.1's API keeps compiling; only the epoch changes the wire.
+
+**What Headstone does today** (`main` @ `b81e3f6`)
+- **Dispatch**: `HeadstoneLayer::OnNetMessage` (`HeadstoneNet.cpp:424-760`) is one `switch` over 15
+  `MsgType`s. Every case repeats the same three things: decode, check the direction (`if (!host ...)`),
+  check the screen. A second `switch` (`:1354`) does the loopback path. Encoding is per-message free
+  functions in `Protocol.cpp` (1098 lines).
+- **Stale packets**: unreliable messages outlive run changes. Headstone guards by hand in four places:
+  - Snapshots dropped on menus and the Game Over card (`:576-588`).
+  - The host sends none from Game Over (`:791`).
+  - Clients send no `PlayerState` from Game Over (`:1211`).
+  - A per-player `Life` counter catches respawns (`:435`).
+  Each guard was added after a bug (Instant Restart D3, 2026-10-01).
+- **Mirror**: `Net/Mirror.{h,cpp}` (352 lines) is already half generic. It has per-id tracks of host-time
+  samples, a render clock `DELAY` (0.1 s) behind, at most `MAX_EXTRAPOLATE` (0.15 s) of extrapolation,
+  a `STALE` (2 s) forget and a `HISTORY` (1 s) trim. On top sit the game-specific parts: deaths that
+  fall due at render time, a stepped header/pickups timeline, and `Settle()` for Game Over.
+
+### Phase 1 — message registry (~3 h, Sonnet)
+
+`include/DingoNet/Messages.h`, header-only templates over `Bytes.h`:
+- A message type declares its id, direction and delivery, and how to write and read itself:
+  ```cpp
+  struct PlayerState
+  {
+      static constexpr uint8_t Id = 3;
+      static constexpr Direction Dir = Direction::ToHost;     // ToHost, ToClients, Both
+      static constexpr Delivery Send = Delivery::Unreliable;
+      void Write(ByteWriter& w) const;
+      bool Read(ByteReader& r);
+      ...fields
+  };
+  ```
+- `Encode(msg)` writes the id and the body. An unreliable message over `MAX_UNRELIABLE_BYTES` fails
+  there, at the sender, with the message's name in the log.
+- `MessageRouter`:
+  - `router.On<PlayerState>([](int slot, const PlayerState& m) { ... })` registers a handler.
+  - `router.Dispatch(slot, data, isHost)` peeks the id, drops a message arriving at the wrong side,
+    decodes, and calls the handler.
+  - It counts per id: received, sent, bytes, dropped for direction, dropped as malformed. That is the
+    data for a net-debug HUD.
+  - An id registered twice, or one in `0xF0-0xFF`, is an error at registration.
+- `Session::Send(slot, msg)` / `Broadcast(msg)` overloads take a message and use its declared delivery.
+- The wire is whatever `Write` writes, so Headstone's existing encodings move over byte for byte.
+  Its golden-bytes tests keep passing.
+- Tests:
+  - round trip;
+  - wrong-direction drop;
+  - truncated and trailing-byte drops;
+  - the oversize unreliable message;
+  - duplicate and reserved ids;
+  - counters.
+
+### Phase 2 — session epoch (~3 h, Opus; wire change)
+
+- The host calls `Session::BeginEpoch()` at every state change where old packets must die: run start,
+  Game Over, back to the lobby.
+- The epoch is a `u8` the host bumps and sends reliably as a new session message `Epoch` (`0xF8`).
+  Clients raise `Event::EpochChanged`.
+- With `SessionParams::Epochs = true`, every game message travels as `Stamped` (`0xF9`): `[0xF9][epoch][game bytes]`.
+  - The receiver drops any stamp that isn't its current epoch, both older and not yet announced.
+  - The game sees the same bytes as today; the session strips the stamp.
+  - Reliable messages are stamped too: a client's reliable sent before it saw the new epoch is just
+    as stale.
+  - Queued messages from the old epoch are dropped at `BeginEpoch` (host) or `Epoch` (client).
+- **Cost:**
+  - 2 bytes per game message.
+  - The game's unreliable limit becomes `Session::MaxUnreliablePayload()` = 1098. Headstone's
+    snapshot parts reach about 1092 bytes, so its room formula shrinks by 2.
+- `k_SessionProtocol` goes 1 → 2. Hello's leading session protocol already lets a v0.1 and a v0.2 peer
+  turn each other away with `ProtocolMismatch`, as v0.1 designed for.
+- The same bump also fixes v0.1 review F4: `SeatLeft` carries the leaver's `DisconnectReason`, so
+  `Event::Transport` is right on clients too.
+- Epochs replace Headstone's four run-change guards. They do not replace `Life`: a respawn is
+  per-player and not a session-wide change.
+- Tests over a `Conditioner` with jitter, so unreliable messages overtake reliable ones:
+  - a straggler from the old epoch is dropped on both sides;
+  - a new-epoch packet that beats its `Epoch` message is dropped;
+  - queued messages are cleared;
+  - the `u8` wraps;
+  - with `Epochs = false` the wire and behaviour are exactly v0.1's;
+  - a v0.1 peer gets `ProtocolMismatch`.
+
+### Phase 3 — the mirror toolkit (~3 h, Opus)
+
+`include/DingoNet/Mirror.h`, header-only, no glm. The game supplies `Interpolate(const T& a, const T& b,
+double t)` (found by ADL) and, for extrapolation, `Extrapolate(const T& a, const T& b, double t)`, `t` > 1.
+
+| Piece | What it does | Headstone today |
+|---|---|---|
+| `RenderClock` | Host-time estimate from snapshot stamps (`HostNow`), render time `Delay` behind it, `Settle()` (hold at the host's last word) | `m_LatestHostTime`, `m_RenderTime`, `Settle` |
+| `Tracks<Key, T>` | Per-key sample history; `Sample(key, renderTime)` interpolates, extrapolates up to `MaxExtrapolate`, then holds; forgets keys unseen for `Stale`, trims samples older than `History` | `Track<State>`, `Push`, `Sample`, `Trim` |
+| `Timeline<T>` | Stepped values (switch when the render clock reaches them) and timed events (`TakeDue()`) | header/pickups deque, `DueDeath` |
+
+- `Tracks` handles split snapshots: each key keeps its own history, so a lost part only costs that
+  part's keys a little extrapolation (Headstone's design).
+- Defaults are Headstone's numbers: 0.1 / 0.15 / 2.0 / 1.0 s.
+- Tests: interpolation between samples, the extrapolation cap, stale forget, trim, out-of-order
+  samples, `Settle`, due events, and a jittered 20 Hz feed whose rendered path never steps more than
+  a set bound. That last one is the same check as Headstone's `ProbeMirrorSmoothness`.
+
+### Phase 4 — release v0.2.0 (~1 h)
+
+- An Opus review of the whole v0.2 diff before the tag, with its findings fixed.
+- Docs: `CLAUDE.md` (the three APIs, the session messages `0xF8`/`0xF9`, protocol 2), the README, and
+  an As-built note here.
+- The owner publishes the `v0.2.0` release; `release.yml` builds the six zips.
+
+### Phase 5 — Headstone on v0.2 (Headstone repo, ~half a day, Opus; after its legacy layer is gone)
+
+- **Timing:** Headstone's default build still runs its own net layer. Its `dingonet-flag-plan.md`
+  Phase 4 flips the default after 11-01, and Phase 5 deletes the old layer after one clean Playtest.
+  Epochs need DingoNet's session, and the registry and the mirror live in the DingoNet package, which
+  the default build doesn't link. Using them while both layers exist would mean writing everything
+  twice. So this phase waits for Headstone's Phase 5.
+- **Work:**
+  - Each `MsgType` becomes a message type.
+  - `OnNetMessage`'s `switch` becomes `router.On<…>` handlers; the loopback path uses the same router.
+  - `BeginEpoch()` at `RunStart`, `RunOver` and back to the lobby; the four hand guards go.
+  - `Net::Mirror` is rebuilt on `RenderClock` + `Tracks` + `Timeline`, keeping only its
+    death/pickup/header glue.
+  - Snapshot room: −2 bytes.
+  - `PROTOCOL_VERSION` 20 → 21.
+- **Done when:**
+  - `--net-selftest` passes, and its golden bytes are unchanged for every message.
+  - The loopback autoplay keeps the mirror's max-step at 0.010 m.
+  - A 2-player TCP capture with an instant RISE AGAIN shows no last-run enemies.
+  - A Steam session works.
+  - Lines: the dispatch `switch` and the stale guards are gone, and `Mirror.cpp` shrinks to the game's
+    glue. Expect `HeadstoneNet.cpp` to lose about a quarter, not half: most of each case's body is
+    game logic that stays.
+
+**Estimate**: phases 1–4 about a day and a half of agent time; phase 5 about half a day, after
+Headstone's own Phase 5.
+
 ## Open questions
 1. **ENet vs. GameNetworkingSockets for v0.3.** ENet: one small C library, trivial in premake, no
    encryption. GNS: same API family as the Steam transport (one code path online and offline), but
@@ -350,3 +488,12 @@ before the first tag.
 2. **macOS**: the engine doesn't build there yet, but the POSIX socket code would cover it.
    Proposed: keep the code portable, with no macOS package or CI until the engine has one.
 3. **Engine roadmap**: update `ROADMAP.md:419-426` to name DingoNet and link its repo once it exists.
+4. **v0.2 epoch stamp on every game message** (2 bytes each, unreliable limit 1098). The other way is
+   stamping only unreliable messages (reliable ones stay in order), but a client's reliable message
+   sent just before it sees a new epoch would then get through stale. Proposed: stamp all, behind
+   `SessionParams::Epochs` (off = v0.1 behaviour).
+5. **Optional trailing fields** (lesson 5: flags bytes are full, and new fields append in a fixed
+   order). A reader could treat missing trailing fields as defaults, but the Hello's protocol and
+   content checks already stop mismatched builds from playing. Proposed: not in v0.2.
+6. **Headstone's v0.2 adoption waits for its legacy layer to go** (its Phase 5). Proposed: yes;
+   DingoNet's phases 1–4 go ahead now.
