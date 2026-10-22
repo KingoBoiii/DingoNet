@@ -746,7 +746,7 @@ TEST(SessionClientTimesOutASilentHost)
 		}
 	}
 	const Session::Event* lost = a.Find(Kind::Lost);
-	CHECK(lost && lost->Leave == LeaveReason::TimedOut && lost->Slot == 1 && lost->Name == "Host");
+	CHECK(lost && lost->Leave == LeaveReason::TimedOut && lost->Slot == 1 && lost->Name == "Host" && !lost->FromBye);
 	CHECK(lostAt > 5.0 && lostAt <= 5.25);
 	CHECK(!a.S.Active());
 }
@@ -849,7 +849,7 @@ TEST(SessionKickFreesTheSeat)
 	CHECK(!kicked.empty() && kicked[0].Type == Kind::Left && kicked[0].Slot == 1 && kicked[0].Leave == LeaveReason::Kicked && kicked[0].Name == "Ann");
 	lan.Pump();
 	const Session::Event* lost = a.Find(Kind::Lost);
-	CHECK(lost && lost->Leave == LeaveReason::Kicked && lost->Slot == 1);
+	CHECK(lost && lost->Leave == LeaveReason::Kicked && lost->Slot == 1 && lost->FromBye);
 	CHECK(!a.S.Active());
 	const Session::Event* seen = b.Find(Kind::Left, 1);
 	CHECK(seen && seen->Leave == LeaveReason::Kicked);
@@ -1094,6 +1094,7 @@ TEST(SessionClientTheHostTimedOutLearnsItOverASilentTransport)
 		const Session::Event* lost = a.Find(Kind::Lost);
 		CHECK(lost && lost->Leave == LeaveReason::TimedOut && lost->Slot == 1);
 		CHECK(steps <= (byeLost ? 56 : 1));
+		CHECK(lost && lost->FromBye == !byeLost);
 		CHECK(host.S.SeatedCount() == 1);
 	}
 }

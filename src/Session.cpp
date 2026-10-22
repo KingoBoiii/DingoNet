@@ -712,6 +712,7 @@ namespace Dingo::Net
 		if (!m_IsHost)
 		{
 			Lose(reason, reason == LeaveReason::TimedOut ? std::string("the host stopped hearing from us") : std::string());
+			m_Events.back().FromBye = true;
 		}
 		else if (peer.Slot >= 0)
 		{

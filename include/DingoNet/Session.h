@@ -105,6 +105,9 @@ namespace Dingo::Net
 			bool Existing = false;
 			// Left on the host: the seat's game messages that were still queued when it went, oldest first.
 			std::vector<std::vector<uint8_t>> LastMessages;
+			// Lost: the reason came in the host's Bye. Lost(TimedOut) with it means the host stopped hearing from us
+			// (our upstream); without it, we stopped hearing from the host.
+			bool FromBye = false;
 			// For logs only: the transport's words, or both sides' versions on a reject.
 			std::string Detail;
 		};
