@@ -1405,3 +1405,32 @@ TEST(SessionSaysByeOnlyToTheSeatedPeersItTimesOut)
 	CHECK(host.Find(Kind::Left, 1) && host.Find(Kind::Left, 1)->Leave == LeaveReason::TimedOut);
 	CHECK(script->SentTo(7, timedOut) && script->DisconnectsOf(7) == 1);
 }
+
+TEST(SessionLetsAJoinerInThroughAConnectionFlood)
+{
+	LogCapture log;
+	Node host(MakeParams(nullptr));
+	std::shared_ptr<Script> script = HostWithAnn(host);
+	host.Clear();
+	script->Events.push_back(Connect(100));
+	script->Packets.push_back({ 100, { 0x10 } });
+	host.Update();
+
+	script->Events.push_back(Connect(101));
+	for (PeerId flood = 102; flood <= 121; flood++)
+	{
+		script->Events.push_back(Connect(flood));
+	}
+	script->Packets.push_back({ 101, Hello(k_SessionProtocol, PROTOCOL, CONTENT, "Bo") });
+	host.Update();
+
+	CHECK(host.Find(Kind::Joined, 2) && host.Find(Kind::Joined, 2)->Name == "Bo");
+	CHECK(script->DisconnectsOf(101) == 0 && script->DisconnectsOf(100) == 0);
+	bool oldestSilentWent = true;
+	for (PeerId flood = 102; flood <= 121; flood++)
+	{
+		oldestSilentWent = oldestSilentWent && script->DisconnectsOf(flood) == (flood <= 106 ? 1 : 0);
+	}
+	CHECK(oldestSilentWent);
+	CHECK(host.S.PeerCount() == 2 + 16);
+}

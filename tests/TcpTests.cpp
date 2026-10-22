@@ -580,3 +580,41 @@ TEST(TcpCloseLingerEndsForAPeerThatNeverHangsUp)
 	CHECK(PumpUntil({ &h }, refused, std::chrono::milliseconds(1000)));
 	CHECK(h.Events.size() == 1);
 }
+
+TEST(TcpCutsTheOldestLingerShortPastTheLimit)
+{
+	TcpParams params;
+	params.MaxConnections = 2;
+	params.CloseLinger = 5.0;
+	std::string error;
+	auto host = TcpTransport::Listen("127.0.0.1", 0, error, params);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	Endpoint h{ host.get() };
+	RawClient raws[3];
+	for (RawClient& raw : raws)
+	{
+		const size_t before = h.Events.size();
+		CHECK(raw.Start() && raw.BeginConnect(host->GetPort()) && WaitConnected(raw.Socket));
+		CHECK(PumpUntil({ &h }, [&] { return h.Events.size() > before; }));
+		if (h.Events.size() <= before)
+		{
+			return;
+		}
+		host->Disconnect(h.Events.back().Peer);
+		h.Poll();
+	}
+
+	auto refused = [](RawClient& raw)
+	{
+		const uint8_t byte = 'x';
+		Internal::SocketError error = Internal::SocketError::None;
+		Internal::Send(raw.Socket, &byte, 1, error);
+		return error == Internal::SocketError::Reset || error == Internal::SocketError::Aborted;
+	};
+	CHECK(PumpUntil({ &h }, [&] { return refused(raws[0]); }, std::chrono::milliseconds(1000)));
+	CHECK(!PumpUntil({ &h }, [&] { return refused(raws[1]) || refused(raws[2]); }, std::chrono::milliseconds(50)));
+}

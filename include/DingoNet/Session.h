@@ -176,6 +176,7 @@ namespace Dingo::Net
 			double ConnectedAt = 0.0;
 			uint64_t Warned = 0;
 			int BadPackets = 0;
+			bool Heard = false;
 		};
 
 		enum class Problem : uint8_t
@@ -204,6 +205,7 @@ namespace Dingo::Net
 		bool ValidClientSlot(int slot) const;
 
 		void OnConnected(PeerId id, double now);
+		void TrimHandshakes();
 		bool OnDisconnected(const PeerEvent& e);
 		void OnPacket(Peer& peer, Packet& packet);
 		void OnUnseatedPacket(Peer& peer, std::span<const uint8_t> data);

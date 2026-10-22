@@ -19,7 +19,8 @@ namespace Dingo::Net
 		size_t MaxQueuedBytes = 4 * 1024 * 1024;
 		// Live connections; those we Disconnect stop counting at once. Room for a full Session (31 clients) and
 		// the 16 handshakes its host keeps at most; a session needs at least MaxSlots - 1 + 16, or a joiner past
-		// it is hung up on instead of turned away as Full.
+		// it is hung up on instead of turned away as Full. Also caps the sockets still lingering after our Disconnect:
+		// past it, the one lingering longest is closed at once.
 		size_t MaxConnections = 64;
 		// Read from one connection per Poll; the rest waits for the next, so a flooding peer can't stall a frame.
 		size_t MaxReadBytesPerPoll = 256 * 1024;

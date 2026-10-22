@@ -434,21 +434,37 @@ namespace Dingo::Net
 
 	void TcpTransport::Disconnect(PeerId peer)
 	{
-		for (auto& owned : m_Connections)
+		const auto target = std::find_if(m_Connections.begin(), m_Connections.end(),
+			[peer](const std::unique_ptr<Connection>& c) { return c->Id == peer && !c->Closed && !c->Closing; });
+		if (target == m_Connections.end())
 		{
-			Connection& c = *owned;
-			if (c.Id != peer || c.Closed || c.Closing)
+			return;
+		}
+		Connection& c = **target;
+		c.Closing = true;
+		if (c.Connecting)
+		{
+			Internal::CloseSocket(c.Socket);
+			c.Closed = true;
+			return;
+		}
+		c.CloseBy = Clock::now() + Seconds(m_Params.CloseLinger);
+		// A peer that never sends its FIN holds a lingering socket for CloseLinger; under a connection flood
+		// those would pile up past the process's descriptor limit, so past MaxConnections the oldest is cut short.
+		size_t lingering = 0;
+		Connection* oldest = nullptr;
+		for (auto& other : m_Connections)
+		{
+			if (other->Closing && !other->Closed)
 			{
-				continue;
+				lingering++;
+				oldest = !oldest || other->CloseBy < oldest->CloseBy ? other.get() : oldest;
 			}
-			c.Closing = true;
-			if (c.Connecting)
-			{
-				Internal::CloseSocket(c.Socket);
-				c.Closed = true;
-				continue;
-			}
-			c.CloseBy = Clock::now() + Seconds(m_Params.CloseLinger);
+		}
+		if (lingering > m_Params.MaxConnections)
+		{
+			Internal::CloseSocket(oldest->Socket);
+			oldest->Closed = true;
 		}
 	}
 

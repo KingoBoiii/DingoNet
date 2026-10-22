@@ -288,14 +288,6 @@ namespace Dingo::Net
 			LogWarn("session: a client's transport reported a second peer ({}); ignored", id);
 			return;
 		}
-		if (m_IsHost && std::count_if(m_Peers.begin(), m_Peers.end(), [](const Peer& p) { return p.Slot < 0; }) >= MAX_HANDSHAKES)
-		{
-			// The oldest goes, not the newest: idle connections must not hold the transport's cap against joiners.
-			const auto oldest = std::find_if(m_Peers.begin(), m_Peers.end(), [](const Peer& p) { return p.Slot < 0; });
-			LogInfo("session: hung up on peer {}: {} connections were already waiting to say Hello", oldest->Id, MAX_HANDSHAKES);
-			m_Transport->Disconnect(oldest->Id);
-			m_Peers.erase(oldest);
-		}
 		m_Peers.push_back({ id, -1, now, now, 0, 0 });
 		if (!m_IsHost)
 		{
@@ -372,6 +364,7 @@ namespace Dingo::Net
 				continue;
 			}
 			peer->LastHeard = now;
+			peer->Heard = true;
 			OnPacket(*peer, packet);
 			if (!m_Transport)
 			{
@@ -385,6 +378,11 @@ namespace Dingo::Net
 			{
 				return;
 			}
+		}
+
+		if (m_IsHost)
+		{
+			TrimHandshakes();
 		}
 
 		if (now >= m_NextPing)
@@ -443,6 +441,25 @@ namespace Dingo::Net
 			m_RateIn = m_Transport->BytesIn;
 			m_RateOut = m_Transport->BytesOut;
 			m_RateStart = now;
+		}
+	}
+
+	// After the packets, so a joiner whose Hello came in this Poll is seated before anyone is let go. Idle
+	// connections must not hold the transport's cap against joiners: those that never sent a byte go first,
+	// oldest first.
+	void Session::TrimHandshakes()
+	{
+		auto unseated = [](const Peer& p) { return p.Slot < 0; };
+		while (std::count_if(m_Peers.begin(), m_Peers.end(), unseated) > MAX_HANDSHAKES)
+		{
+			auto victim = std::find_if(m_Peers.begin(), m_Peers.end(), [](const Peer& p) { return p.Slot < 0 && !p.Heard; });
+			if (victim == m_Peers.end())
+			{
+				victim = std::find_if(m_Peers.begin(), m_Peers.end(), unseated);
+			}
+			LogInfo("session: hung up on peer {}: over {} connections were waiting to say Hello", victim->Id, MAX_HANDSHAKES);
+			m_Transport->Disconnect(victim->Id);
+			m_Peers.erase(victim);
 		}
 	}
 
