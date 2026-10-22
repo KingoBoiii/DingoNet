@@ -331,6 +331,11 @@ to 64. `SteamTransport` makes no Steam call while `isAlive` is false and is iner
 `DingoNet-SteamTests` (`--steam-sdk`, a fake `ISteamNetworkingMessages`). The Linux library is `-fPIC`; the
 `.bat` files pause only under Explorer. Tests: 62 → 71 on both OSes, plus 5 Steam tests.
 
+A second review of those fixes (same file, R1–R5, 5 Low) is fixed too: a timeout `Bye` only to seated peers,
+joiners kept through a connection flood with lingering sockets capped, a session `Hello` ending Steam's 1 s
+ignore window, `Session::Event::FromBye` (the second API addition) and two TCP tests that skip rather than
+flake. Tests: 75 on both OSes, plus 6 Steam tests.
+
 **Estimate**: phases 1–5 about a day and a half of agent time, Linux included; phase 6 about half a
 day plus the manual two-machine Steam check.
 
