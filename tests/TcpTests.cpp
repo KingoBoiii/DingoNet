@@ -485,3 +485,98 @@ TEST(TcpHostTakesANewConnectionWhileAnOldOneLingers)
 	n.Poll();
 	CHECK(!n.Has(Kind::Disconnected));
 }
+
+TEST(TcpDropsAPeerThatStopsReading)
+{
+	LogCapture log;
+	TcpParams params;
+	params.MaxQueuedBytes = 256 * 1024;
+	TcpPair pair;
+	CHECK(OpenPair(pair, params));
+	if (pair.ToClient == 0)
+	{
+		return;
+	}
+	const std::vector<uint8_t> chunk = Pattern(60 * 1024, 1);
+	for (int i = 0; i < 2000 && !pair.H.Has(Kind::Disconnected); i++)
+	{
+		pair.Host->Send(pair.ToClient, chunk, Delivery::Reliable);
+		pair.H.Poll();
+	}
+	const PeerEvent* dropped = pair.H.Find(Kind::Disconnected);
+	CHECK(dropped != nullptr && dropped->Peer == pair.ToClient && dropped->Reason == DisconnectReason::Error && dropped->Detail == "not reading");
+	CHECK(log.Warnings() == 1);
+}
+
+TEST(TcpConnectGivesUpAfterTheConnectTimeout)
+{
+	TcpParams params;
+	params.ConnectTimeout = 0.2;
+	std::string error;
+	// TEST-NET-1 (RFC 5737) is routed nowhere: the SYN goes out and nothing answers.
+	auto client = TcpTransport::Connect("192.0.2.1", 9, error, params);
+	CHECK(client != nullptr);
+	if (!client)
+	{
+		return;
+	}
+	Endpoint c{ client.get() };
+	const auto started = std::chrono::steady_clock::now();
+	CHECK(PumpUntil({ &c }, [&] { return c.Has(Kind::Disconnected) || c.Has(Kind::Connected); }, std::chrono::milliseconds(2000)));
+	const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+	const PeerEvent* failed = c.Find(Kind::Disconnected);
+	if (failed && failed->Detail.find("timed out") == std::string::npos)
+	{
+		std::printf("  skipped: this network answers 192.0.2.1 (%s)\n", failed->Detail.c_str());
+		return;
+	}
+	CHECK(failed != nullptr && failed->Reason == DisconnectReason::ConnectFailed);
+	CHECK(waited >= 0.2 && waited < 1.0);
+}
+
+TEST(TcpCloseLingerEndsForAPeerThatNeverHangsUp)
+{
+	TcpParams params;
+	params.CloseLinger = 0.2;
+	std::string error;
+	auto host = TcpTransport::Listen("127.0.0.1", 0, error, params);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	Endpoint h{ host.get() };
+	RawClient raw;
+	CHECK(raw.Start());
+	CHECK(raw.BeginConnect(host->GetPort()));
+	CHECK(WaitConnected(raw.Socket));
+	CHECK(PumpUntil({ &h }, [&] { return h.Has(Kind::Connected); }));
+	if (!h.Has(Kind::Connected))
+	{
+		return;
+	}
+
+	// The raw client reads our FIN but never sends its own; a send of its fails once our side is gone for good.
+	auto finished = [&raw]
+	{
+		uint8_t buffer[64];
+		Internal::SocketError error;
+		return Internal::Receive(raw.Socket, buffer, sizeof(buffer), error) == 0;
+	};
+	auto refused = [&raw]
+	{
+		const uint8_t byte = 'x';
+		Internal::SocketError error = Internal::SocketError::None;
+		Internal::Send(raw.Socket, &byte, 1, error);
+		return error == Internal::SocketError::Reset || error == Internal::SocketError::Aborted;
+	};
+	const auto lingerStart = std::chrono::steady_clock::now();
+	host->Disconnect(h.Find(Kind::Connected)->Peer);
+	CHECK(PumpUntil({ &h }, finished, std::chrono::milliseconds(150)));
+	CHECK(!PumpUntil({ &h }, refused, std::chrono::milliseconds(20)));
+	CHECK(std::chrono::steady_clock::now() - lingerStart < std::chrono::milliseconds(200));
+
+	PumpUntil({ &h }, [&] { return std::chrono::steady_clock::now() - lingerStart > std::chrono::milliseconds(300); });
+	CHECK(PumpUntil({ &h }, refused, std::chrono::milliseconds(1000)));
+	CHECK(h.Events.size() == 1);
+}
