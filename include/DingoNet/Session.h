@@ -98,7 +98,8 @@ namespace Dingo::Net
 			std::string Name;
 			RejectReason Rejection = RejectReason::ProtocolMismatch;
 			LeaveReason Leave = LeaveReason::Bye;
-			// Leave == TransportLost: what the transport reported.
+			// Leave == TransportLost: what our own transport reported, so a host's Left and a client's Lost. A
+			// client's Left for another client always holds Closed: the host's SeatLeft carries no transport reason.
 			Dingo::Net::DisconnectReason Transport = Dingo::Net::DisconnectReason::Closed;
 			// Joined on a client: already seated when we were welcomed, not a new arrival.
 			bool Existing = false;
