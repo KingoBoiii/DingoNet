@@ -542,6 +542,13 @@ netcode library can own. TCP stays: tests, firewalls that block UDP, and as the 
   `THIRD_PARTY.txt`). `CLAUDE.md`'s vendor table lists ENet.
 - **Done when:** CI green on both OSes with ENet compiled in and no API yet.
 
+**As built (2026-10-27)**: `4345c09`, PR #12. ENet 1.3.18 = commit `2662c0de`. The `ws2_32` and `winmm`
+pragmas live in `src/Platform/EnetLink.h`, force-included into ENet's files on Windows: a pragma in
+`WinSocket.cpp` is not linked for a consumer that references only ENet (a static-lib member is pulled in
+only when something references it; checked with a scratch exe). ENet gets a per-file `warnings "Off"`;
+the Linux `HAS_*` defines are redundant with ENet's own `unix.c` but explicit. `THIRD_PARTY.txt` ships in
+both packages.
+
 ### Phase 2 — `UdpTransport` (~4 h, Sonnet)
 
 `include/DingoNet/UdpTransport.h` (plain C++20, no ENet type in it), implementation in
@@ -579,6 +586,29 @@ platform headers may (`NOMINMAX` and `WIN32_LEAN_AND_MEAN` before it).
   (seeded), and 1000 reliable packets still arrive complete and in order. Sessions: a handshake and a
   full 32-seat session over UDP, and one over 10 % loss.
 - `NetCheck`: `--udp-host`/`--udp-client`, the cross-OS check, Windows ↔ WSL2.
+
+**As built (2026-10-27)**: `f8cebe2`, PR #14 (165 tests in all, 21 of them new in `tests/UdpTests.cpp`).
+Changes from the design above:
+
+- **Three channels, not two.** `Delivery::UnreliableSequenced` is new (channel 2, ENet flags 0): never
+  delivered after a newer packet from the same peer. Only `UdpTransport` enforces it; TCP, loopback and
+  Steam treat it as `Unreliable`; `Conditioner` drops one that jitter would release late. It is a new enum
+  value, so a game's exhaustive `switch` over `Delivery` needs a case or a `default`.
+- **An over-cap incoming reliable packet drops the peer** (`Error`, the remote sees `Closed`) and is
+  logged; ENet's own incoming cap is set above the limit, since a datagram it refuses goes unacked and the
+  sender would only time out.
+- **Hang-up keeps its slot** until the other end acks or 2 s pass, so a dead peer cannot hold a slot for
+  the full `PeerTimeout`.
+- **A socket failure inside `enet_host_service`** raises `Error` for every peer (`ConnectFailed` for one
+  not yet connected), then closes the transport. No test: the failure cannot be induced.
+- `Close` needs the peer to keep polling, or the hang-up goes out unsequenced and a parting `Bye` can be
+  lost (`Left(TransportLost)` instead of `Left(Bye)`).
+- The loss hook is `src/Internal/UdpTestAccess.h` (`DropIncomingDatagrams`, ENet's `intercept` callback).
+- **Linux timing.** ENet reads `gettimeofday` on Linux; the WSL2 wall clock jumps (one run saw "silent for
+  8.0 s" after 0.97 s). The timing tests have wide pump limits, and two retry; `ubuntu-latest` CI was green.
+- A Sonnet diff review: findings 1, 3 and 4 fixed; 2, 5 and 6 (Low) left open.
+- Still to do in phase 4: the cross-OS `--udp-host`/`--udp-client` run (from WSL2 in NAT mode the client
+  must use the WSL2 address, since localhost forwarding carries TCP only).
 
 ### Phase 3 — LAN discovery (~3 h, Sonnet)
 
