@@ -117,3 +117,8 @@ Do not commit unless asked. One commit per phase of the plan, after its review.
 - Diff reviews ("Review ... diff") and phase implementation: model "sonnet", effort medium.
 - Opus only for the pre-tag netcode review and debugging with an unknown cause (transport, session, wire).
 - Run one session per phase. Use the session-handoff skill, then start a new session. A session should not span more than one day.
+
+## Sub-agent rules
+
+- Diff reviews use model "sonnet", effort "medium".
+- Opus only for netcode design or root-cause reviews, with the reason in the spawn description.
