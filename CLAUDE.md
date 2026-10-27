@@ -110,10 +110,9 @@ See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 
 ## Workflow
 
-Do not commit unless asked. One commit per phase of the plan, after its review.
+Do not commit unless asked. One commit per phase of the plan, after its review. Run one session per phase: use the session-handoff skill, then start a new session. A session should not span more than one day.
 
 ## Sub-agents
 
-- Diff reviews ("Review ... diff") and phase implementation: model "sonnet", effort medium.
-- Opus only for the pre-tag netcode review and debugging with an unknown cause (transport, session, wire).
-- Run one session per phase. Use the session-handoff skill, then start a new session. A session should not span more than one day.
+- Diff reviews ("Review ... diff") and phase implementation: model "sonnet", effort "medium".
+- Opus only for netcode design, the pre-tag netcode review, and root-cause work with an unknown cause (transport, session, wire), with the reason in the spawn description.
