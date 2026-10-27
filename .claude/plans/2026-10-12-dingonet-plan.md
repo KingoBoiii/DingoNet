@@ -88,7 +88,7 @@ build), `Net/Mirror.*` until v0.2 makes it generic.
 |---|---|---|
 | **v0.1 Extract** | Bytes, Transport, TCP (Winsock + POSIX), Loopback, Conditioner, Session (configurable), Steam as a source drop, Windows and Linux packages + CI | Headstone runs on the package with no gameplay change; its net tests and a 2-instance soak pass; DingoNet-Tests pass on both OSes, a Windows host and a Linux client included |
 | v0.2 Structure | Message registry (replaces the dispatch `switch`), session epoch, generic `Mirror<T>` interpolation | Headstone dispatches through the registry, has no hand-written stale-packet guards, and builds its mirror on the toolkit |
-| v0.3 UDP | Reliable-UDP transport (ENet proposed) | LAN play over UDP without Steam, on Windows and Linux |
+| v0.3 UDP | `UdpTransport` on ENet, LAN discovery (`LanHost`, `LanBrowser`) | A Windows host and a Linux client find each other on a LAN and play over UDP without Steam |
 | v0.4 Engine bridge | `DingoNet-Engine`: `NetLayer`, UUID-keyed scene replication (`IDComponent`, `Scene::GetEntityByUUID`, `Scene.h:208`) | 2–4 player co-op retrofitted onto a second example (the roadmap showcase) |
 | v1.0 Module | Packaged as an optional engine module, documented | Listed under the engine roadmap's Modules |
 
@@ -510,10 +510,158 @@ double t)` (found by ADL) and, for extrapolation, `Extrapolate(const T& a, const
 **Estimate**: phases 1–4 about a day and a half of agent time; phase 5 about half a day, after
 Headstone's own Phase 5.
 
+## v0.3 — UDP (planned 2026-10-22)
+
+**Why UDP when TCP already plays without Steam.** Players already get UDP through Steam: HOST CO-OP
+opens a Steam lobby whenever Steam is running (`HeadstoneLayer::HostCoopFromMenu`,
+`HeadstoneNet.cpp:316`). Without Steam, or with `--lan`, it and `--host`/`--join` fall back to
+`TcpTransport` on port 27960 (`HeadstoneNetDingo.cpp:61-62`), listening on `127.0.0.1` (two windows on
+one PC) unless `--lan`. That fallback is where v0.3 helps: TCP delivers every "unreliable" snapshot
+reliably and in order, so one lost segment stalls every packet behind it until the retransmit, a lag
+spike on a lossy Wi-Fi link exactly when snapshots should simply be skipped. UDP gives real unreliable
+delivery, and a LAN list means nobody types an IP. It is also the road to a non-Steam release (another
+store, a DRM-free build).
+
+**Library: ENet** (open question 1, decided). One small C library (MIT, about 6k lines), Windows and
+Linux, reliable ordered channels plus unreliable packets, connection handling and timeouts. GNS
+would pull in protobuf and OpenSSL/libsodium; a hand-written reliability layer is the riskiest code a
+netcode library can own. TCP stays: tests, firewalls that block UDP, and as the fallback.
+
+### Phase 1 — vendor ENet (~1.5 h, Sonnet)
+
+- `vendor/enet/`: the latest 1.3.x release (1.3.18 when planned; check the tag), source and `LICENSE`
+  only, never modified.
+- Premake compiles ENet's `.c` files into the `DingoNet` static lib, so a game still links one
+  library. Vendor files build without our warning flags (a per-file filter, not an edit); Linux gets
+  ENet's feature defines (`HAS_POLL`, `HAS_FCNTL`, `HAS_SOCKLEN_T`, `HAS_MSGHDR_FLAGS`,
+  `HAS_GETADDRINFO`, `HAS_GETNAMEINFO`, `HAS_INET_PTON`, `HAS_INET_NTOP`) so it doesn't fall back to
+  `gethostbyname` and `select`.
+- Windows: ENet needs `winmm` (`timeGetTime`) beside `ws2_32`; a `#pragma comment(lib, "winmm.lib")`
+  keeps "a game names nothing extra" true.
+- The package gains ENet's license (`steam/` precedent: shipped beside `LICENSE.txt` as
+  `THIRD_PARTY.txt`). `CLAUDE.md`'s vendor table lists ENet.
+- **Done when:** CI green on both OSes with ENet compiled in and no API yet.
+
+### Phase 2 — `UdpTransport` (~4 h, Sonnet)
+
+`include/DingoNet/UdpTransport.h` (plain C++20, no ENet type in it), implementation in
+`src/Platform/UdpTransport.cpp`: `enet.h` pulls in `winsock2.h`/`windows.h`, so it lives where
+platform headers may (`NOMINMAX` and `WIN32_LEAN_AND_MEAN` before it).
+
+- `UdpTransport::Listen/Connect(address, port, error, UdpParams)`, `GetPort()`, the same shape as TCP
+  (IPv4; port 0 picks one).
+- **Init**: `enet_initialize`/`enet_deinitialize` refcounted under a mutex, like `WSAStartup`. On
+  Windows ENet's init calls `timeBeginPeriod(1)` for the process: note it in the header.
+- **Channels**: 2. Reliable → channel 0, `ENET_PACKET_FLAG_RELIABLE` (ordered). Unreliable → channel
+  1, `ENET_PACKET_FLAG_UNSEQUENCED`: may be lost or reordered, the same contract as Steam, so no
+  message type silently drops another's older packet.
+- **Caps** (`UdpParams`, TCP's numbers): 64 KB reliable packet (`maximumPacketSize`; larger is logged
+  and dropped at the sender), 64 peers (`MaxConnections`), the 1100-byte unreliable cap below ENet's
+  1392 MTU so no unreliable packet fragments, a per-`Poll` budget of received bytes so a flooding peer
+  can't stall a frame (TCP's 256 KB), 5 s connect, ENet's peer timeout set so the session's 5 s
+  `Timeout` fires first.
+- **Ids**: a fresh `PeerId` per connection kept in `peer->data`; never the `ENetPeer*`, whose slots ENet
+  reuses.
+- **Events → `DisconnectReason`**: a connect that never completes → `ConnectFailed` (ENet has no
+  explicit deny, so nothing is `Refused`, as with Steam); a peer timeout → `TimedOut`; a peer's
+  disconnect → `Closed`.
+- **Our side**: `Disconnect` = `enet_peer_disconnect_later` (what we queued still goes) and raises no
+  event, also when ENet later confirms it; `Close` disconnects everyone, services for at most 0.25 s,
+  then destroys the host; after it the transport is inert.
+- **Poll**: `enet_host_flush`, then `enet_host_service(…, 0)` until empty or out of budget.
+- **Sockets**: ENet owns its socket, the one exception to "every socket call goes through
+  `Socket.h`"; right after `enet_host_create` the socket is made non-inheritable through `Socket.h`.
+  ENet has no encryption: LAN play, as with TCP.
+- **Tests** (`tests/UdpTests.cpp`, `127.0.0.1` port 0, time-capped loops): connect, both deliveries,
+  ordering of reliable, the 64 KB and 1100-byte caps, `Disconnect` delivers what was queued and raises
+  no event, `Close`, a connect to a dead port → `ConnectFailed`, peer cap, a silent peer → `TimedOut`.
+  Loss: an internal test hook on ENet's `intercept` callback drops a share of incoming datagrams
+  (seeded), and 1000 reliable packets still arrive complete and in order. Sessions: a handshake and a
+  full 32-seat session over UDP, and one over 10 % loss.
+- `NetCheck`: `--udp-host`/`--udp-client`, the cross-OS check, Windows ↔ WSL2.
+
+### Phase 3 — LAN discovery (~3 h, Sonnet)
+
+`include/DingoNet/LanDiscovery.h`; raw UDP gets added to `src/Platform/Socket.h` (`OpenUdp`, `SendTo`,
+`RecvFrom`, `SetBroadcast`), so both OSes share one code path.
+
+- **Query/response**, not a beacon. A `LanBrowser` broadcasts a query to `255.255.255.255:<port>` once
+  a second while open; a `LanHost` bound to that port answers by unicast. Nothing broadcasts while no
+  one browses, and several browsers on one machine each use their own ephemeral port.
+- **Query**: magic `DNLAN`, a discovery version, the game's `Protocol`, padded so a reply is never
+  larger than the query (a spoofed source gets no amplification). **Reply**: the version, `Protocol`,
+  `ContentHash`, game port, host name (`NameFilter`), seats taken/max, accepting, and up to 256 game
+  bytes (a map name, a mode).
+- `LanBrowser::Hosts()` lists address, port, the reply's fields, and whether `Protocol` and
+  `ContentHash` match ours, so a game can grey out an incompatible host. A host silent for 3 s drops off.
+- Pumped once a frame like everything else; a host answers at most 32 queries per pump; strict decode,
+  malformed datagrams dropped and counted.
+- **Tests**: loopback-addressed query/reply (CI runners can't be relied on for broadcast), filtering,
+  the amplification bound, expiry. A real-LAN broadcast check runs by hand (WSL2 in NAT mode doesn't
+  pass broadcasts; mirrored networking or two machines).
+
+### Phase 4 — release v0.3.0 (~1.5 h)
+
+- The cross-OS UDP `NetCheck`, and one broadcast discovery run on a real LAN.
+- An Opus review of the whole v0.3 diff before the tag, with its findings fixed.
+- Docs: `CLAUDE.md` (UDP transport, discovery, the ENet exception), the README, As-built notes here.
+- `VERSION` 0.3. The wire of the session is unchanged (`k_SessionProtocol` stays 2): v0.3 adds a
+  transport, so a v0.2 game on TCP or Steam keeps playing with v0.3 builds on the same transport.
+- The owner publishes `v0.3.0`; `release.yml` builds the six zips.
+
+### Phase 5 — Headstone on UDP (Headstone repo, ~half a day, Sonnet)
+
+- **Timing:** after Headstone's default build runs on DingoNet (its Phase 4) and after its v0.2 move,
+  so its net code changes once per step.
+- The non-Steam path (`--lan`, no Steam, `--host`/`--join`) switches to `UdpTransport` on 27960; `--tcp`
+  keeps the old path for a release as the fallback. HOST CO-OP with Steam running stays a Steam lobby.
+- A "LAN games" list on the join screen from `LanBrowser`, incompatible hosts greyed with the reason;
+  a non-Steam HOST CO-OP runs a `LanHost`.
+- **Done when:** a Windows host and a Linux client find each other in the LAN list and play a run over
+  UDP; a capture with 5 % loss shows snapshots skipped, not stalled; the Steam path is untouched.
+
+**Estimate:** phases 1–4 about a day and a half of agent time; phase 5 about half a day, after
+Headstone's v0.2 move.
+
+## Owner-authoritative co-op: header conflicts (2026-10-27)
+
+A physics co-op game (1–4 players) has each client simulate its own character, the host own the
+world, and a shared object owned by whoever touched it last: owner-authoritative, no prediction,
+rollback or determinism; singleplayer is a loopback host that owns everything. Issues #4–#9
+(label `physics-coop`) carry the work. Five things in today's headers don't fit that model:
+
+1. **`RenderClock` assumes one clock, the host's** (`Mirror.h`: `OnSnapshot(hostStamp)`, `HostNow`).
+   Client-owned objects are stamped by clients, and a client never learns the host's clock: a `Ping`
+   carries the sender's own ms since start and the `Pong` echoes it back. **Fix (#6):** the host
+   restamps relayed track entries into host time with a per-slot offset (the minimum of host receive
+   time minus sender time over a sliding window, reset on `Left`), so every client's `RenderClock`
+   still sees one host timeline. `Mirror.h` doesn't change.
+2. **The session is a star** (`Session.h`: a client talks only to slot 0). A client-owned object
+   reaches the other clients in two hops, owner → host → viewer. **Fix (#6):** the host relays with
+   `Broadcast(…, exceptSlot)`, batched with its own objects; games size `RenderClockParams::Delay`
+   (0.1 s by default) for two hops, not one.
+3. **Size checks compare `== Delivery::Unreliable`** (`Encode` in `Messages.h`,
+   `Session::FitsUnreliable`, `Session::UnreliableFits`). A new `Delivery::UnreliableSequenced` would
+   skip the 1100-byte cap and fragment, which Steam drops whole. **Fix (#4):** `IsUnreliable(Delivery)`
+   in `Transport.h`, used by every check; `Conditioner` loss covers both unreliable kinds. A game's
+   exhaustive `switch` over `Delivery` needs the new case (`-Wswitch` under `-Werror`).
+4. **v0.3 makes unreliable unsequenced on purpose** (phase 2: `ENET_PACKET_FLAG_UNSEQUENCED`, so no
+   message type drops another's older packet). `UnreliableSequenced` brings that back, per peer across
+   every message on it. **Fix (#4):** ENet channel 2 without flags; documented for one bundled stream
+   per peer (the pose batch), while independent message types stay `Unreliable` and let `Tracks` order
+   samples by time. TCP and loopback deliver in order already; the Steam sockets transport (#5) adds a
+   2-byte transport-private sequence; `Conditioner` jitter never releases one after a newer one.
+5. **`Coord` covers only ±327 m** (`Bytes.h`: centimetres in an `int16`), too small for a large level.
+   **Fix (#7):** a new `Coord24` (±83 km) for hip positions, beside `Quat32` / `Quat24` smallest-three
+   rotations. Existing encodings and their golden bytes don't change, so the wire doesn't either.
+
+None of the fixes touches the session wire: `k_SessionProtocol` stays 2, and replication uses
+game-range ids (#6) with a `k_ReplicationProtocol` the game folds into `ContentHash`.
+
 ## Open questions
-1. **ENet vs. GameNetworkingSockets for v0.3.** ENet: one small C library, trivial in premake, no
-   encryption. GNS: same API family as the Steam transport (one code path online and offline), but
-   pulls in protobuf and OpenSSL/libsodium. Proposed: ENet.
+1. **ENet vs. GameNetworkingSockets for v0.3.** Decided 2026-10-22: ENet (see v0.3). ENet: one small
+   C library, trivial in premake, no encryption. GNS: same API family as the Steam transport (one code
+   path online and offline), but pulls in protobuf and OpenSSL/libsodium.
 2. **macOS**: the engine doesn't build there yet, but the POSIX socket code would cover it.
    Proposed: keep the code portable, with no macOS package or CI until the engine has one.
 3. **Engine roadmap**: update `ROADMAP.md:419-426` to name DingoNet and link its repo once it exists.
@@ -526,3 +674,11 @@ Headstone's own Phase 5.
    content checks already stop mismatched builds from playing. Proposed: not in v0.2.
 6. **Headstone's v0.2 adoption waits for its legacy layer to go** (its Phase 5). Proposed: yes;
    DingoNet's phases 1–4 go ahead now.
+7. **ENet inside `DingoNet.lib` or beside it.** Inside: a game links one library and names nothing
+   extra, but a game that links its own ENet gets duplicate symbols and must drop its copy. Beside
+   (`lib/<Config>/enet.lib`): one more library to name. Proposed: inside, with the bundled ENet
+   version in the README.
+8. **Discovery by query/response or by a host beacon.** A beacon is simpler but broadcasts all game
+   long and needs the port shared between browsers on one machine. Proposed: query/response.
+9. **Keep TCP after UDP lands.** Proposed: yes; it is the fallback where UDP is blocked, and the
+   tests and `NetCheck` lean on it.
