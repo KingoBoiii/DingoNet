@@ -136,6 +136,11 @@ namespace Dingo::Net::Internal
 		return SetCloseOnExec(static_cast<int>(socket)) ? SocketError::None : LastError();
 	}
 
+	SocketError DisableUdpConnReset(SocketHandle)
+	{
+		return SocketError::None;
+	}
+
 	SocketError ConfigureStream(SocketHandle socket)
 	{
 		const int flags = fcntl(Native(socket), F_GETFL, 0);
@@ -338,6 +343,11 @@ namespace Dingo::Net::Internal
 	int LastNativeSocketError()
 	{
 		return s_LastError;
+	}
+
+	int CurrentNativeSocketError()
+	{
+		return errno;
 	}
 
 }

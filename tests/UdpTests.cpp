@@ -7,6 +7,7 @@
 #include <DingoNet/Session.h>
 #include <DingoNet/UdpTransport.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -735,4 +736,312 @@ TEST(UdpSessionTimeoutFiresBeforeTheTransportsOwn)
 		sessionWon = lost && lost->Leave == LeaveReason::TimedOut && !lost->FromBye && seconds < UdpParams{}.PeerTimeout;
 	}
 	CHECK(sessionWon);
+}
+
+TEST(UdpCarriesOnThroughFailedReceives)
+{
+	LogCapture log;
+	UdpPair pair;
+	CHECK(OpenPair(pair));
+	if (!pair.ToClient)
+	{
+		return;
+	}
+	Internal::UdpTestAccess::FailIncomingDatagrams(*pair.Host, 3);
+	for (uint32_t i = 0; i < 50; i++)
+	{
+		pair.Client->Send(pair.ToHost, Numbered(i), Delivery::Reliable);
+		pair.C.Poll();
+		pair.H.Poll();
+	}
+	CHECK(PumpUntil({ &pair.H, &pair.C }, [&] { return pair.H.Packets.size() == 50; }));
+	for (size_t i = 0; i < pair.H.Packets.size(); i++)
+	{
+		CHECK(NumberOf(pair.H.Packets[i].Data) == i);
+	}
+	CHECK(Internal::UdpTestAccess::IsOpen(*pair.Host));
+	CHECK(!pair.H.Has(Kind::Disconnected) && !pair.C.Has(Kind::Disconnected));
+	CHECK(log.Warnings() == 1 && log.Errors() == 0);
+}
+
+TEST(UdpClosesOnlyWhenTheSocketFailsForASecond)
+{
+	LogCapture log;
+	UdpPair pair;
+	CHECK(OpenPair(pair));
+	if (!pair.ToClient)
+	{
+		return;
+	}
+	Internal::UdpTestAccess::BreakSocket(*pair.Host);
+	const auto broken = std::chrono::steady_clock::now();
+	pair.H.Poll();
+	CHECK(Internal::UdpTestAccess::IsOpen(*pair.Host) && pair.H.Events.empty());
+	CHECK(PumpUntil({ &pair.H }, [&] { return pair.H.Has(Kind::Disconnected); }));
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - broken).count();
+	CHECK(seconds >= 0.99);
+	const PeerEvent* failed = pair.H.Find(Kind::Disconnected);
+	CHECK(failed && failed->Reason == DisconnectReason::Error && failed->Peer == pair.ToClient);
+	CHECK(!Internal::UdpTestAccess::IsOpen(*pair.Host));
+	CHECK(log.Errors() == 1 && log.Warnings() == 1);
+	pair.Host->Send(pair.ToClient, Text("inert"), Delivery::Reliable);
+}
+
+TEST(UdpResetsHalfOpenConnectsPastSixteen)
+{
+	UdpParams params;
+	params.MaxConnections = 20;
+	std::string error;
+	auto host = UdpTransport::Listen("127.0.0.1", 0, error, params);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	Endpoint h{ host.get() };
+	std::vector<std::unique_ptr<UdpTransport>> halfOpen;
+	for (int i = 0; i < 40; i++)
+	{
+		halfOpen.push_back(UdpTransport::Connect("127.0.0.1", host->GetPort(), error));
+		if (halfOpen.back())
+		{
+			Endpoint once{ halfOpen.back().get() };
+			once.Poll();
+		}
+	}
+	PumpUntil({ &h }, [] { return false; }, std::chrono::milliseconds(50));
+	CHECK(Internal::UdpTestAccess::PendingPeers(*host) == 16);
+
+	auto client = UdpTransport::Connect("127.0.0.1", host->GetPort(), error);
+	Endpoint c{ client.get() };
+	CHECK(PumpUntil({ &h, &c }, [&] { return (c.Has(Kind::Connected) && h.Has(Kind::Connected)) || c.Has(Kind::Disconnected); }));
+	CHECK(c.Has(Kind::Connected) && h.Has(Kind::Connected) && !c.Has(Kind::Disconnected));
+	CHECK(Internal::UdpTestAccess::PendingPeers(*host) <= 16);
+}
+
+TEST(UdpResetsAHalfOpenConnectAfterConnectTimeout)
+{
+	UdpParams params;
+	params.MaxConnections = 2;
+	params.ConnectTimeout = 0.5;
+	std::string error;
+	auto host = UdpTransport::Listen("127.0.0.1", 0, error, params);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	Endpoint h{ host.get() };
+	std::vector<std::unique_ptr<UdpTransport>> halfOpen;
+	for (int i = 0; i < 2; i++)
+	{
+		halfOpen.push_back(UdpTransport::Connect("127.0.0.1", host->GetPort(), error));
+		if (halfOpen.back())
+		{
+			Endpoint once{ halfOpen.back().get() };
+			once.Poll();
+		}
+	}
+	CHECK(PumpUntil({ &h }, [&] { return Internal::UdpTestAccess::PendingPeers(*host) == 2; }, std::chrono::milliseconds(1000)));
+	const auto full = std::chrono::steady_clock::now();
+	CHECK(PumpUntil({ &h }, [&] { return Internal::UdpTestAccess::PendingPeers(*host) == 0; }, std::chrono::milliseconds(2000)));
+	CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() - full).count() >= 0.4);
+
+	auto client = UdpTransport::Connect("127.0.0.1", host->GetPort(), error);
+	Endpoint c{ client.get() };
+	CHECK(PumpUntil({ &h, &c }, [&] { return c.Has(Kind::Connected) || c.Has(Kind::Disconnected); }));
+	CHECK(c.Has(Kind::Connected));
+}
+
+TEST(UdpCapsTheConnectionsFromOneAddress)
+{
+	UdpParams params;
+	params.MaxConnections = 8;
+	params.MaxConnectionsPerAddress = 2;
+	std::string error;
+	auto host = UdpTransport::Listen("127.0.0.1", 0, error, params);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	auto first = UdpTransport::Connect("127.0.0.1", host->GetPort(), error);
+	auto second = UdpTransport::Connect("127.0.0.1", host->GetPort(), error);
+	Endpoint h{ host.get() };
+	Endpoint c0{ first.get() };
+	Endpoint c1{ second.get() };
+	CHECK(PumpUntil({ &h, &c0, &c1 }, [&] { return c0.Has(Kind::Connected) && c1.Has(Kind::Connected); }));
+	if (!c0.Has(Kind::Connected) || !c1.Has(Kind::Connected))
+	{
+		return;
+	}
+
+	UdpParams quick;
+	quick.ConnectTimeout = 0.25;
+	auto third = UdpTransport::Connect("127.0.0.1", host->GetPort(), error, quick);
+	Endpoint c2{ third.get() };
+	CHECK(PumpUntil({ &h, &c0, &c1, &c2 }, [&] { return c2.Has(Kind::Disconnected); }));
+	const PeerEvent* failed = c2.Find(Kind::Disconnected);
+	CHECK(failed && failed->Reason == DisconnectReason::ConnectFailed);
+	CHECK(!c2.Has(Kind::Connected));
+
+	first->Disconnect(c0.Find(Kind::Connected)->Peer);
+	second->Disconnect(c1.Find(Kind::Connected)->Peer);
+	PumpUntil({ &h, &c0, &c1 }, [&] { return std::count_if(h.Events.begin(), h.Events.end(), [](const PeerEvent& e) { return e.Type == Kind::Disconnected; }) == 2; });
+}
+
+TEST(UdpDropsAPeerWhoseQueuePassesTheCap)
+{
+	LogCapture log;
+	UdpParams params;
+	params.MaxQueuedBytes = 256 * 1024;
+	UdpPair pair;
+	CHECK(OpenPair(pair, params));
+	if (!pair.ToClient)
+	{
+		return;
+	}
+	for (int i = 0; i < 8; i++)
+	{
+		pair.Host->Send(pair.ToClient, Pattern(64 * 1024, static_cast<uint8_t>(i)), Delivery::Reliable);
+	}
+	CHECK(Internal::UdpTestAccess::QueuedBytes(*pair.Host, pair.ToClient) > 256 * 1024);
+	CHECK(Internal::UdpTestAccess::QueuedBytes(*pair.Host, pair.ToClient) <= 256 * 1024 + 64 * 1024);
+	pair.H.Poll();
+	const PeerEvent* dropped = pair.H.Find(Kind::Disconnected);
+	CHECK(dropped && dropped->Reason == DisconnectReason::Error && dropped->Peer == pair.ToClient);
+	CHECK(log.Errors() == 1);
+	CHECK(Internal::UdpTestAccess::QueuedBytes(*pair.Host, pair.ToClient) == 0);
+	CHECK(PumpUntil({ &pair.H, &pair.C }, [&] { return pair.C.Has(Kind::Disconnected); }));
+}
+
+TEST(UdpADrainingPeerStaysUnderTheQueueCap)
+{
+	UdpParams params;
+	params.MaxQueuedBytes = 256 * 1024;
+	UdpPair pair;
+	CHECK(OpenPair(pair, params));
+	if (!pair.ToClient)
+	{
+		return;
+	}
+	for (uint32_t i = 0; i < 300; i++)
+	{
+		Bytes data = Pattern(4096, static_cast<uint8_t>(i));
+		std::memcpy(data.data(), &i, 4);
+		pair.Host->Send(pair.ToClient, data, Delivery::Reliable);
+		pair.H.Poll();
+		pair.C.Poll();
+	}
+	CHECK(PumpUntil({ &pair.H, &pair.C }, [&]
+	{
+		return pair.C.Packets.size() == 300 && Internal::UdpTestAccess::QueuedBytes(*pair.Host, pair.ToClient) == 0;
+	}));
+	CHECK(!pair.H.Has(Kind::Disconnected) && !pair.C.Has(Kind::Disconnected));
+	for (size_t i = 0; i < pair.C.Packets.size(); i++)
+	{
+		CHECK(NumberOf(pair.C.Packets[i].Data) == i);
+	}
+}
+
+TEST(UdpReadBudgetCountsEmptyPackets)
+{
+	UdpParams params;
+	params.ReadBudgetBytes = 640;
+	UdpPair pair;
+	CHECK(OpenPair(pair, params));
+	if (!pair.ToClient)
+	{
+		return;
+	}
+	for (int i = 0; i < 200; i++)
+	{
+		pair.Client->Send(pair.ToHost, Bytes(), Delivery::Reliable);
+	}
+	size_t most = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+	while (pair.H.Packets.size() < 200 && std::chrono::steady_clock::now() < deadline)
+	{
+		pair.C.Poll();
+		const size_t before = pair.H.Packets.size();
+		pair.H.Poll();
+		most = (std::max)(most, pair.H.Packets.size() - before);
+	}
+	CHECK(pair.H.Packets.size() == 200);
+	CHECK(most > 0 && most <= 10);
+	CHECK(pair.Host->BytesIn == 0);
+}
+
+TEST(UdpRefusesPeersWithTooFewChannels)
+{
+	LogCapture log;
+	std::string error;
+	auto host = UdpTransport::Listen("127.0.0.1", 0, error);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	auto a = Internal::UdpTestAccess::Open("127.0.0.1", host->GetPort(), false, 1, error);
+	auto b = Internal::UdpTestAccess::Open("127.0.0.1", host->GetPort(), false, 1, error);
+	CHECK(a != nullptr && b != nullptr);
+	if (!a || !b)
+	{
+		return;
+	}
+	Endpoint h{ host.get() };
+	Endpoint ca{ a.get() };
+	Endpoint cb{ b.get() };
+	CHECK(PumpUntil({ &h, &ca, &cb }, [&] { return ca.Has(Kind::Disconnected) && cb.Has(Kind::Disconnected); }));
+	PumpUntil({ &h, &ca, &cb }, [] { return false; }, std::chrono::milliseconds(50));
+	CHECK(h.Events.empty());
+	CHECK(log.Warnings() == 2);
+}
+
+TEST(UdpAClientRefusesAHostWithTooFewChannels)
+{
+	std::string error;
+	auto host = Internal::UdpTestAccess::Open("127.0.0.1", 0, true, 1, error);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	auto client = UdpTransport::Connect("127.0.0.1", host->GetPort(), error);
+	Endpoint h{ host.get() };
+	Endpoint c{ client.get() };
+	CHECK(PumpUntil({ &h, &c }, [&] { return c.Has(Kind::Disconnected); }));
+	const PeerEvent* failed = c.Find(Kind::Disconnected);
+	CHECK(failed && failed->Reason == DisconnectReason::ConnectFailed);
+	CHECK(!c.Has(Kind::Connected));
+}
+
+TEST(UdpWarnsOnceForAPeerItCannotSendTo)
+{
+	LogCapture log;
+	std::string error;
+	auto host = Internal::UdpTestAccess::Open("127.0.0.1", 0, true, 1, error);
+	CHECK(host != nullptr);
+	if (!host)
+	{
+		return;
+	}
+	auto client = Internal::UdpTestAccess::Open("127.0.0.1", host->GetPort(), false, 1, error);
+	Endpoint h{ host.get() };
+	Endpoint c{ client.get() };
+	CHECK(PumpUntil({ &h, &c }, [&] { return h.Has(Kind::Connected) && c.Has(Kind::Connected); }));
+	if (!h.Has(Kind::Connected))
+	{
+		return;
+	}
+	const PeerId toClient = h.Find(Kind::Connected)->Peer;
+	for (int i = 0; i < 3; i++)
+	{
+		host->Send(toClient, Text("loose"), Delivery::Unreliable);
+		host->Send(toClient, Text("sequenced"), Delivery::UnreliableSequenced);
+	}
+	CHECK(log.Warnings() == 1);
+	host->Send(toClient, Text("reliable"), Delivery::Reliable);
+	CHECK(PumpUntil({ &h, &c }, [&] { return !c.Packets.empty(); }));
+	CHECK(c.Packets.size() == 1 && c.Packets[0].Data == Text("reliable"));
 }

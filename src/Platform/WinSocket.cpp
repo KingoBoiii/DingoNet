@@ -135,6 +135,19 @@ namespace Dingo::Net::Internal
 		return SetHandleInformation(reinterpret_cast<HANDLE>(Native(socket)), HANDLE_FLAG_INHERIT, 0) ? SocketError::None : SocketError::Other;
 	}
 
+	SocketError DisableUdpConnReset(SocketHandle socket)
+	{
+		// SIO_UDP_CONNRESET, which not every SDK's headers declare.
+		constexpr DWORD UDP_CONNRESET = _WSAIOW(IOC_VENDOR, 12);
+		BOOL report = FALSE;
+		DWORD returned = 0;
+		if (WSAIoctl(Native(socket), UDP_CONNRESET, &report, static_cast<DWORD>(sizeof(report)), nullptr, 0, &returned, nullptr, nullptr) != 0)
+		{
+			return LastError();
+		}
+		return SocketError::None;
+	}
+
 	SocketError ConfigureStream(SocketHandle socket)
 	{
 		u_long nonBlocking = 1;
@@ -310,6 +323,11 @@ namespace Dingo::Net::Internal
 	int LastNativeSocketError()
 	{
 		return s_LastError;
+	}
+
+	int CurrentNativeSocketError()
+	{
+		return WSAGetLastError();
 	}
 
 }
