@@ -27,7 +27,7 @@ src/                     Implementations
 tests/                   DingoNet-Tests: own runner (TestFramework.h), one file per area
   steam/                 DingoNet-SteamTests (only with --steam-sdk): SteamTransport on a fake Steam
 steam/                   SteamTransport source drop, shipped in the package
-docs/                    API details per area: messages, transports, session, mirror, steam, tests
+docs/                    API details per area: messages, transports, discovery, session, mirror, steam, tests
 scripts/windows/         Generate.bat, Build.bat, Test.bat, Package.bat
 scripts/linux/           Generate.sh, Build.sh, Test.sh, Package.sh
 vendor/premake/          Premake binaries — NEVER modify vendor code
@@ -72,6 +72,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 - **Bytes** (`Bytes.h`): `ByteWriter`/`ByteReader`, little-endian, wire-identical to Headstone's (a golden-bytes test pins it; never change an encoding without a protocol bump). Quantizers: `Coord` (centimetres in an `int16`, ±327 m), `Angle16`/`Angle8` (wrapped to [0, 360)), `Unit8` (0–1); NaN encodes as 0. A reader fails for good on the first short read and returns zeros from then on: check `Ok()` once after decoding. It holds a span, so the bytes must outlive it.
 - **Messages and unreliable size cap** (`Messages.h`): typed game messages, a router and per-id stats; unreliable packets are capped at 1100 bytes. Details: `docs/messages.md`, read it before changing messages.
 - **Transports** (`Transport.h`): TCP, UDP (bundled ENet), loopback and the conditioner behind one `Transport` interface; `Delivery::UnreliableSequenced`. Details: `docs/transports.md`, read it before changing a transport.
+- **LAN discovery** (`LanDiscovery.h`): `LanHost` answers and `LanBrowser` lists hosts over raw UDP, query/response, no broadcast beacon. Details: `docs/discovery.md`, read it before changing discovery.
 - **Session** (`Session.h`): handshake, seats, events, pings, timeouts and epochs over a `Transport`. Details: `docs/session.md`, read it before changing the session or its wire.
 - **Mirror** (`Mirror.h`): header-only interpolation, extrapolation and render clock for replicated state. Details: `docs/mirror.md`, read it before changing mirror code.
 
@@ -105,7 +106,7 @@ See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 - **v0.1.0 Extract**: the library extracted from Headstone.
 - **v0.1.1**: the v0.1 review fixes, wire-compatible with v0.1.0.
 - **v0.2.0 Structure**: message registry, session epochs, `Mirror.h`; reviews fixed.
-- **v0.3 UDP**: phase 1 bundles ENet, phase 2 adds `UdpTransport` and `Delivery::UnreliableSequenced` (LAN play without Steam); not released.
+- **v0.3 UDP**: phase 1 bundles ENet, phase 2 adds `UdpTransport` and `Delivery::UnreliableSequenced` (LAN play without Steam), phase 3 LAN discovery; not released.
 - **v0.4 Engine bridge**: `DingoNet-Engine`. **v1.0 Module**: an optional DingoEngine module, listed under the engine roadmap's Modules.
 
 ## Workflow

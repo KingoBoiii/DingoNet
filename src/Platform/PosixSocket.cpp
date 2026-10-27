@@ -316,6 +316,83 @@ namespace Dingo::Net::Internal
 		return static_cast<ptrdiff_t>(got);
 	}
 
+	SocketHandle OpenUdpSocket(AddressFamily, SocketError& error)
+	{
+#ifdef SOCK_CLOEXEC
+		const int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+#else
+		const int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+#endif
+		if (s < 0)
+		{
+			error = LastError();
+			return INVALID_SOCKET_HANDLE;
+		}
+#ifndef SOCK_CLOEXEC
+		SetCloseOnExec(s);
+#endif
+		const int flags = fcntl(s, F_GETFL, 0);
+		if (flags < 0 || fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0)
+		{
+			error = LastError();
+			close(s);
+			return INVALID_SOCKET_HANDLE;
+		}
+		error = SocketError::None;
+		return static_cast<SocketHandle>(s);
+	}
+
+	SocketError SetBroadcast(SocketHandle socket, bool enabled)
+	{
+		int value = enabled ? 1 : 0;
+		if (setsockopt(Native(socket), SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) != 0)
+		{
+			return LastError();
+		}
+		return SocketError::None;
+	}
+
+	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error)
+	{
+		sockaddr_in native;
+		ToNative(to, native);
+		ssize_t sent;
+		do
+		{
+			sent = sendto(Native(socket), data, size, DN_SEND_FLAGS, reinterpret_cast<const sockaddr*>(&native), sizeof(native));
+		} while (sent < 0 && errno == EINTR);
+		if (sent < 0)
+		{
+			error = LastError();
+			return -1;
+		}
+		error = SocketError::None;
+		return static_cast<ptrdiff_t>(sent);
+	}
+
+	ptrdiff_t RecvFrom(SocketHandle socket, uint8_t* buffer, size_t size, SocketAddress& from, SocketError& error)
+	{
+		sockaddr_in native{};
+		socklen_t length = sizeof(native);
+		ssize_t got;
+		do
+		{
+			length = sizeof(native);
+			got = recvfrom(Native(socket), buffer, size, 0, reinterpret_cast<sockaddr*>(&native), &length);
+		} while (got < 0 && errno == EINTR);
+		if (got < 0)
+		{
+			error = LastError();
+			return -1;
+		}
+		from = {};
+		from.Family = AddressFamily::IPv4;
+		from.Port = ntohs(native.sin_port);
+		std::memcpy(from.Bytes.data(), &native.sin_addr, 4);
+		error = SocketError::None;
+		return static_cast<ptrdiff_t>(got);
+	}
+
 	void ShutdownSend(SocketHandle socket)
 	{
 		shutdown(Native(socket), SHUT_WR);

@@ -7,6 +7,7 @@ How the `DingoNet-Tests` cases are built and which file covers which area.
 - Network tests run over the loopback transport (a `Conditioner` with a fake clock for lag), or over real sockets on `127.0.0.1` port 0, each poll loop capped by time (`TransportTestUtils.h`: `PumpUntil`, `LogCapture`) (on Windows a refused connect waits out SYN retries).
 - `tests/MessageTests.cpp` (the registry), `tests/EpochTests.cpp` (epochs over a lagged loopback rig) and `tests/MirrorTests.cpp` (`RenderClock`, `Tracks`, `Timeline`, `EventQueue`, a simulated 20 Hz feed) cover v0.2.
 - `tests/UdpTests.cpp` covers `UdpTransport` (every delivery, caps, timeouts, a 10 % datagram-loss hook, sessions over UDP, a lagged `Conditioner` stream). The timing tests have wide limits or a retry because WSL2's wall clock jumps and ENet reads it.
+- `tests/LanDiscoveryTests.cpp` covers `LanHost` and `LanBrowser` over real UDP sockets on `127.0.0.1` (a host addressed directly, raw datagrams for the malformed, size-bound and rate-limit cases, a fake clock for query and expiry timing).
 - Session tests (`tests/SessionTests.cpp`) drive time through `SessionParams::Clock` and pump a fixed number of rounds, with a few runs over TCP (a handshake, a full 32-seat session, 70 idle sockets) and a `FakeSteam` transport for Steam's semantics (silent `Disconnect`, a 1 s ignore window, a returning SteamID as a new connection).
 
 ## Cross-OS check
