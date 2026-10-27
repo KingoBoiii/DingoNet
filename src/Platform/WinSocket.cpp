@@ -130,6 +130,11 @@ namespace Dingo::Net::Internal
 		return static_cast<SocketHandle>(s);
 	}
 
+	SocketError MakeNonInheritable(SocketHandle socket)
+	{
+		return SetHandleInformation(reinterpret_cast<HANDLE>(Native(socket)), HANDLE_FLAG_INHERIT, 0) ? SocketError::None : SocketError::Other;
+	}
+
 	SocketError ConfigureStream(SocketHandle socket)
 	{
 		u_long nonBlocking = 1;

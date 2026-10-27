@@ -15,8 +15,17 @@ namespace Dingo::Net
 	enum class Delivery : uint8_t
 	{
 		Reliable,
-		Unreliable
+		Unreliable,
+		// May be lost; never delivered after a newer UnreliableSequenced packet from the same peer. Sequencing is
+		// per peer across every such packet, so it suits one stream per peer, not several independent message types.
+		// TCP, loopback and Steam deliver in order anyway, so there it behaves as Unreliable.
+		UnreliableSequenced
 	};
+
+	constexpr bool IsUnreliable(Delivery delivery)
+	{
+		return delivery != Delivery::Reliable;
+	}
 
 	// Steam drops a whole fragmented unreliable message, so no transport carries a bigger one.
 	inline constexpr size_t MAX_UNRELIABLE_BYTES = 1100;

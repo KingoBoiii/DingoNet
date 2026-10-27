@@ -253,6 +253,87 @@ TEST(ConditionerKeepsEveryReliablePacketInOrderUnderLagAndLoss)
 	CHECK(conditioned.Dropped < COUNT / 10);
 }
 
+TEST(ConditionerLosesBothUnreliableKindsAndNeverLosesReliable)
+{
+	FakeClock clock;
+	LoopbackPair pair = CreateLoopbackPair();
+	ConditionerParams params;
+	params.Loss = 1.0f;
+	params.Clock = [&clock] { return clock.Now; };
+	Conditioner conditioned(std::move(pair.Client), params);
+	Endpoint host{ pair.Host.get() };
+	Endpoint client{ &conditioned };
+	host.Poll();
+	client.Poll();
+	const PeerId toHost = client.Find(Kind::Connected)->Peer;
+
+	conditioned.Send(toHost, Text("loose"), Delivery::Unreliable);
+	conditioned.Send(toHost, Text("sequenced"), Delivery::UnreliableSequenced);
+	conditioned.Send(toHost, Text("kept"), Delivery::Reliable);
+	client.Poll();
+	host.Poll();
+	CHECK(host.Packets.size() == 1 && host.Packets[0].Data == Text("kept"));
+	CHECK(conditioned.Dropped == 2);
+}
+
+TEST(ConditionerNeverReleasesASequencedPacketAfterANewerOne)
+{
+	FakeClock clock;
+	LoopbackPair pair = CreateLoopbackPair();
+	ConditionerParams params;
+	params.LagSeconds = 0.1;
+	params.JitterSeconds = 0.08;
+	params.Clock = [&clock] { return clock.Now; };
+	Conditioner conditioned(std::move(pair.Client), params);
+	Endpoint host{ pair.Host.get() };
+	Endpoint client{ &conditioned };
+	host.Poll();
+	client.Poll();
+	const PeerId toHost = client.Find(Kind::Connected)->Peer;
+
+	constexpr uint32_t COUNT = 300;
+	for (uint32_t i = 0; i < COUNT; i++)
+	{
+		conditioned.Send(toHost, Numbered(i, false), Delivery::UnreliableSequenced);
+		conditioned.Send(toHost, Numbered(i, true), Delivery::Unreliable);
+		clock.Advance(std::chrono::milliseconds(2));
+		client.Poll();
+		host.Poll();
+	}
+	for (int i = 0; i < 100 && conditioned.GetQueuedCount() > 0; i++)
+	{
+		clock.Advance(std::chrono::milliseconds(10));
+		client.Poll();
+		host.Poll();
+	}
+	CHECK(conditioned.GetQueuedCount() == 0);
+
+	uint32_t sequenced = 0;
+	uint32_t unsequenced = 0;
+	bool forward = true;
+	bool first = true;
+	uint32_t last = 0;
+	for (const Packet& p : host.Packets)
+	{
+		ByteReader r(p.Data);
+		const bool loose = r.U8() == 1;
+		const uint32_t index = r.U32();
+		if (loose)
+		{
+			unsequenced++;
+			continue;
+		}
+		forward = forward && (first || index > last);
+		first = false;
+		last = index;
+		sequenced++;
+	}
+	CHECK(forward);
+	CHECK(unsequenced == COUNT);
+	CHECK(sequenced > 0 && sequenced < COUNT);
+	CHECK(sequenced + conditioned.Dropped == COUNT);
+}
+
 TEST(ConditionerDisconnectSendsHeldPacketsFirst)
 {
 	FakeClock clock;

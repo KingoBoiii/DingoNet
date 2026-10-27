@@ -147,7 +147,7 @@ namespace Dingo::Net
 	void SteamTransport::Send(PeerId to, std::span<const uint8_t> data, Delivery delivery)
 	{
 		if (!m_Impl || !m_Impl->Usable()) return;
-		if (delivery == Delivery::Unreliable && data.size() > MAX_UNRELIABLE_BYTES)
+		if (IsUnreliable(delivery) && data.size() > MAX_UNRELIABLE_BYTES)
 		{
 			m_Impl->Say(LogLevel::Error, std::format("dropped an unreliable packet of {} bytes (max {})", data.size(), MAX_UNRELIABLE_BYTES));
 			return;
