@@ -72,8 +72,9 @@ xcopy /e /i /q /y steam "%STAGE%\steam" >nul || exit /b 1
 copy /y "%LIBDIR%\DingoNet.lib" "%STAGE%\lib\%CFG%\" >nul || exit /b 1
 if exist "%LIBDIR%\DingoNet.pdb" copy /y "%LIBDIR%\DingoNet.pdb" "%STAGE%\lib\%CFG%\" >nul
 copy /y LICENSE.txt "%STAGE%\" >nul || exit /b 1
+copy /y vendor\enet\LICENSE "%STAGE%\THIRD_PARTY.txt" >nul || exit /b 1
 > "%STAGE%\VERSION.txt" echo %VER%
-"%SystemRoot%\System32\tar.exe" -a -c -f "%ZIP%" -C "%STAGE%" include lib steam LICENSE.txt VERSION.txt || exit /b 1
+"%SystemRoot%\System32\tar.exe" -a -c -f "%ZIP%" -C "%STAGE%" include lib steam LICENSE.txt THIRD_PARTY.txt VERSION.txt || exit /b 1
 rmdir /s /q "%STAGE%"
 echo Packaged %ZIP%
 exit /b 0
