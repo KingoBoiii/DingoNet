@@ -52,7 +52,9 @@ project "DingoNet"
 	{
 		"include/DingoNet/**.h",
 		"src/**.h",
-		"src/**.cpp"
+		"src/**.cpp",
+		"vendor/enet/*.c",
+		"vendor/enet/include/enet/*.h"
 	}
 
 	includedirs
@@ -61,11 +63,24 @@ project "DingoNet"
 		"src"
 	}
 
+	externalincludedirs { "vendor/enet/include" }
+
+	filter "files:vendor/enet/**"
+		warnings "Off"
+
+	filter { "system:windows", "files:vendor/enet/**" }
+		forceincludes { "Platform/EnetLink.h" }
+
 	filter "system:windows"
-		removefiles { "src/Platform/PosixSocket.cpp" }
+		removefiles { "src/Platform/PosixSocket.cpp", "vendor/enet/unix.c" }
 
 	filter "system:linux"
-		removefiles { "src/Platform/WinSocket.cpp" }
+		removefiles { "src/Platform/WinSocket.cpp", "vendor/enet/win32.c" }
+		defines
+		{
+			"HAS_POLL", "HAS_FCNTL", "HAS_SOCKLEN_T", "HAS_MSGHDR_FLAGS",
+			"HAS_GETADDRINFO", "HAS_GETNAMEINFO", "HAS_INET_PTON", "HAS_INET_NTOP"
+		}
 
 	filter {}
 
