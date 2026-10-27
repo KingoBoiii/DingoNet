@@ -283,6 +283,14 @@ namespace Dingo::Net
 		browser->m_Socket = socket;
 		browser->m_Port = local.Port;
 		browser->m_Params = params;
+		if (!(params.QueryInterval >= 0.1))
+		{
+			browser->m_Params.QueryInterval = 0.1;
+		}
+		if (!(params.HostTimeout >= params.QueryInterval))
+		{
+			browser->m_Params.HostTimeout = browser->m_Params.QueryInterval * 3.0;
+		}
 		browser->m_Start = params.Clock ? params.Clock() : std::chrono::steady_clock::now();
 		return browser;
 	}
