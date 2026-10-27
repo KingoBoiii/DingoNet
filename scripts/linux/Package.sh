@@ -39,6 +39,7 @@ for arg in "$@"; do
 	cp -r steam "$stage/steam"
 	cp "build/bin/$config-linux-x86_64/DingoNet/libDingoNet.a" "$stage/lib/$config/"
 	cp LICENSE.txt "$stage/"
+	cp vendor/enet/LICENSE "$stage/THIRD_PARTY.txt"
 	echo "$ver" > "$stage/VERSION.txt"
 	if command -v zip >/dev/null 2>&1; then
 		(cd "$stage" && zip -q -r "$zip_path" .)

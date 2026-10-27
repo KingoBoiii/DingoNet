@@ -23,6 +23,10 @@ Each platform has the same three scripts, runnable from any directory, with an o
 
 Windows needs Visual Studio with the C++ workload (toolset v145); Linux needs GCC 13 or newer and `make`.
 
+## Bundled libraries
+
+[ENet](https://github.com/lsalzman/enet) 1.3.18 (MIT) is compiled into `DingoNet.lib` for the UDP transport planned for v0.3, so a game links one library and names nothing extra. A game that links its own ENet gets duplicate symbols and must drop its copy. Its license ships in the package as `THIRD_PARTY.txt`.
+
 ## License
 
 MIT, see `LICENSE.txt`.

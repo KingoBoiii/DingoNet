@@ -30,6 +30,7 @@ docs/                    API details per area: messages, transports, session, mi
 scripts/windows/         Generate.bat, Build.bat, Test.bat, Package.bat
 scripts/linux/           Generate.sh, Build.sh, Test.sh, Package.sh
 vendor/premake/          Premake binaries — NEVER modify vendor code
+vendor/enet/             ENet 1.3.18 source (include/enet/*.h, *.c, LICENSE): compiled into DingoNet
 .claude/plans/           Plans (2026-10-12-dingonet-plan.md is the v0.1 → v1.0 plan)
 CHANGELOG.md             Released versions with dates, builds and review notes
 ```
@@ -82,6 +83,9 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 | Vendor | Role |
 |---|---|
 | premake | Build generation (binaries only) |
+| ENet 1.3.18 (`vendor/enet/`, tag `v1.3.18` = commit `2662c0de`, MIT) | Reliable UDP for the v0.3 `UdpTransport`; compiled into `DingoNet.lib`, no API yet. Only the `*.c` files, `include/enet/*.h` and `LICENSE` of the tag are kept, never modified; the license ships as `THIRD_PARTY.txt` |
+
+ENet builds without our warning flags (a per-file `warnings "Off"` filter in `premake5.lua`); on Linux the library gets ENet's `HAS_*` feature defines, and on Windows `src/Platform/EnetLink.h` is force-included into ENet's files so `ws2_32` and `winmm` reach any game that links only ENet (a `#pragma comment` in `WinSocket.cpp` would not, since a static-lib member is linked only when something references it). A game that links its own ENet must drop it.
 
 The core links only the OS (Winsock on Windows, libc on Linux). Steam ships as source (`steam/`) that the game compiles against its own Steamworks SDK. Details: `docs/steam.md`, read it before changing the Steam transport.
 

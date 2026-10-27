@@ -11,7 +11,7 @@ What `scripts/windows/*.bat` and `scripts/linux/*.sh` do, and the platform notes
 
 ## Package
 
-- `Package [Config...]` (default all three): builds each and writes `build/package/DingoNet-<DN_VERSION>.<build>-<Config>-<os>-x86_64.zip` with `include/`, `lib/<Config>/{DingoNet.lib | libDingoNet.a}`, `steam/`, `LICENSE.txt`, `VERSION.txt`; no top-level folder, forward-slash entries (Windows zips through `tar.exe`, Linux through `zip` or `python3 -m zipfile`).
+- `Package [Config...]` (default all three): builds each and writes `build/package/DingoNet-<DN_VERSION>.<build>-<Config>-<os>-x86_64.zip` with `include/`, `lib/<Config>/{DingoNet.lib | libDingoNet.a}`, `steam/`, `LICENSE.txt`, `THIRD_PARTY.txt` (ENet's license), `VERSION.txt`; no top-level folder, forward-slash entries (Windows zips through `tar.exe`, Linux through `zip` or `python3 -m zipfile`).
 - `DN_VERSION` (MAJOR.MINOR.PATCH, default `<VERSION>.0`), `DN_BUILD_NUMBER` (default the commit count), `DN_NO_BUILD=1` (`.bat` only: skip building, for CI).
 - It stamps `BuildInfo.h` for the build and restores it with a fresh timestamp, so later builds recompile `Version.cpp`.
 
