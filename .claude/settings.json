@@ -1,6 +1,4 @@
 {
-  "model": "claude-sonnet-5-5",
-  "effortLevel": "medium",
   "env": {
     "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "20"
   }
