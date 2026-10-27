@@ -2,9 +2,11 @@
 #include "TransportTestUtils.h"
 
 #include <DingoNet/TcpTransport.h>
+#include <DingoNet/UdpTransport.h>
 
 #include <charconv>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -57,23 +59,52 @@ namespace
 		return std::string(packet.Data.begin(), packet.Data.end());
 	}
 
-	int RunHost(std::string_view endpoint)
+	struct Opened
+	{
+		std::unique_ptr<Transport> Link;
+		uint16_t Port = 0;
+	};
+
+	Opened OpenHost(bool udp, const std::string& address, uint16_t port, std::string& error)
+	{
+		if (udp)
+		{
+			auto host = UdpTransport::Listen(address, port, error);
+			const uint16_t bound = host ? host->GetPort() : 0;
+			return { std::move(host), bound };
+		}
+		auto host = TcpTransport::Listen(address, port, error);
+		const uint16_t bound = host ? host->GetPort() : 0;
+		return { std::move(host), bound };
+	}
+
+	std::unique_ptr<Transport> OpenClient(bool udp, const std::string& address, uint16_t port, std::string& error)
+	{
+		if (udp)
+		{
+			return UdpTransport::Connect(address, port, error);
+		}
+		return TcpTransport::Connect(address, port, error);
+	}
+
+	int RunHost(std::string_view endpoint, bool udp)
 	{
 		std::string address;
 		uint16_t port = 0;
 		if (!SplitEndpoint(endpoint, address, port))
 		{
-			std::printf("net-check: expected --tcp-host=<ipv4>:<port>\n");
+			std::printf("net-check: expected --%s-host=<ipv4>:<port>\n", udp ? "udp" : "tcp");
 			return 2;
 		}
 		std::string error;
-		auto host = TcpTransport::Listen(address, port, error);
+		Opened opened = OpenHost(udp, address, port, error);
+		std::unique_ptr<Transport> host = std::move(opened.Link);
 		if (!host)
 		{
 			std::printf("net-check host: %s\n", error.c_str());
 			return 1;
 		}
-		std::printf("net-check host (%s): listening on %s:%u, waiting 60 s for a client\n", PLATFORM, address.c_str(), static_cast<unsigned>(host->GetPort()));
+		std::printf("net-check host (%s): listening on %s %s:%u, waiting 60 s for a client\n", PLATFORM, udp ? "udp" : "tcp", address.c_str(), static_cast<unsigned>(opened.Port));
 		std::fflush(stdout);
 
 		Endpoint h{ host.get() };
@@ -107,17 +138,17 @@ namespace
 		return finished && echoed == CHECK_PACKETS + 1 ? 0 : 1;
 	}
 
-	int RunClient(std::string_view endpoint)
+	int RunClient(std::string_view endpoint, bool udp)
 	{
 		std::string address;
 		uint16_t port = 0;
 		if (!SplitEndpoint(endpoint, address, port))
 		{
-			std::printf("net-check: expected --tcp-client=<ipv4>:<port>\n");
+			std::printf("net-check: expected --%s-client=<ipv4>:<port>\n", udp ? "udp" : "tcp");
 			return 2;
 		}
 		std::string error;
-		auto client = TcpTransport::Connect(address, port, error);
+		std::unique_ptr<Transport> client = OpenClient(udp, address, port, error);
 		if (!client)
 		{
 			std::printf("net-check client: %s\n", error.c_str());
@@ -157,15 +188,25 @@ namespace
 
 int RunNetCheck(std::string_view argument)
 {
-	constexpr std::string_view HOST = "--tcp-host=";
-	constexpr std::string_view CLIENT = "--tcp-client=";
-	if (argument.starts_with(HOST))
+	constexpr std::string_view TCP_HOST = "--tcp-host=";
+	constexpr std::string_view TCP_CLIENT = "--tcp-client=";
+	constexpr std::string_view UDP_HOST = "--udp-host=";
+	constexpr std::string_view UDP_CLIENT = "--udp-client=";
+	if (argument.starts_with(TCP_HOST))
 	{
-		return RunHost(argument.substr(HOST.size()));
+		return RunHost(argument.substr(TCP_HOST.size()), false);
 	}
-	if (argument.starts_with(CLIENT))
+	if (argument.starts_with(TCP_CLIENT))
 	{
-		return RunClient(argument.substr(CLIENT.size()));
+		return RunClient(argument.substr(TCP_CLIENT.size()), false);
+	}
+	if (argument.starts_with(UDP_HOST))
+	{
+		return RunHost(argument.substr(UDP_HOST.size()), true);
+	}
+	if (argument.starts_with(UDP_CLIENT))
+	{
+		return RunClient(argument.substr(UDP_CLIENT.size()), true);
 	}
 	return -1;
 }

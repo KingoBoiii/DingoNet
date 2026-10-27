@@ -553,6 +553,8 @@ TEST(EpochsOffPutGameMessagesOnTheWireExactlyAsV01Did)
 	CHECK(log.Errors() == 0);
 	rig.Host.S.Send(1, Bytes(1101, 0x30), Delivery::Unreliable);
 	CHECK(log.Errors() == 1);
+	CHECK(!rig.Host.S.Send(1, Bytes(1101, 0x30), Delivery::UnreliableSequenced));
+	CHECK(log.Errors() == 2);
 }
 
 TEST(EpochsOnStampEveryGameMessageAndCheckEveryStamp)
@@ -712,6 +714,8 @@ TEST(EpochMaxUnreliablePayloadIs1098WithEpochsOn)
 	CHECK(rig.Host.S.Broadcast(over, Delivery::Unreliable) == 0);
 	CHECK(a.S.Broadcast(over, Delivery::Unreliable) == 0);
 	CHECK(log.Errors() == 4);
+	CHECK(!rig.Host.S.Send(1, over, Delivery::UnreliableSequenced));
+	CHECK(log.Errors() == 5);
 	CHECK(rig.Host.S.Send(1, over, Delivery::Reliable));
 	rig.Step(5);
 	CHECK(a.Messages.size() == 3 && rig.Host.Messages.size() == 1);

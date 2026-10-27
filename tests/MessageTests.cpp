@@ -159,6 +159,26 @@ namespace
 		bool Read(ByteReader&) { return true; }
 	};
 
+	struct BulkSequenced
+	{
+		static constexpr uint8_t Id = 0x2B;
+		static constexpr Direction Dir = Direction::Both;
+		static constexpr Delivery Send = Delivery::UnreliableSequenced;
+		static constexpr const char* Name = "BulkSequenced";
+
+		size_t Size = 0;
+
+		void Write(ByteWriter& w) const
+		{
+			for (size_t i = 0; i < Size; i++)
+			{
+				w.U8(0);
+			}
+		}
+
+		bool Read(ByteReader&) { return true; }
+	};
+
 	std::vector<uint8_t> Wire(const Move& move)
 	{
 		return *Encode(move);
@@ -267,6 +287,21 @@ TEST(MessageEncodeRejectsAnOversizeUnreliableMessage)
 
 	Bulk fits;
 	fits.Blob.assign(MAX_UNRELIABLE_BYTES - 1, 1);
+	CHECK(Encode(fits).has_value());
+	CHECK(log.Errors() == 1);
+}
+
+TEST(MessageEncodeCapsAnUnreliableSequencedMessageLikeAnUnreliableOne)
+{
+	LogCapture log;
+	BulkSequenced big;
+	big.Size = MAX_UNRELIABLE_BYTES;
+	CHECK(!Encode(big).has_value());
+	CHECK(log.Errors() == 1);
+	CHECK(log.Last().find("BulkSequenced") != std::string::npos);
+
+	BulkSequenced fits;
+	fits.Size = MAX_UNRELIABLE_BYTES - 1;
 	CHECK(Encode(fits).has_value());
 	CHECK(log.Errors() == 1);
 }

@@ -9,6 +9,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -20,7 +21,7 @@ namespace Dingo::Net
 		double LagSeconds = 0.0;
 		// Each packet waits an extra uniform 0..JitterSeconds; reliable ones never overtake each other.
 		double JitterSeconds = 0.0;
-		// The share of unreliable packets dropped; reliable ones always arrive.
+		// The share of unreliable packets (of either kind) dropped; reliable ones always arrive.
 		float Loss = 0.0f;
 		uint32_t Seed = 99;
 		// Null reads std::chrono::steady_clock; a test or a game's own net clock can drive it instead.
@@ -28,7 +29,8 @@ namespace Dingo::Net
 	};
 
 	// Fake network weather on everything sent through the wrapped transport. Its random stream is its
-	// own, so it never shifts a game's randomness.
+	// own, so it never shifts a game's randomness. Jitter never releases an UnreliableSequenced packet after
+	// a newer one to the same peer: it is dropped and counted in Dropped.
 	class Conditioner final : public Transport
 	{
 	public:
@@ -58,6 +60,7 @@ namespace Dingo::Net
 		{
 			PeerId To = 0;
 			Delivery Mode = Delivery::Reliable;
+			uint64_t Sequence = 0;
 			std::vector<uint8_t> Data;
 		};
 
@@ -76,6 +79,8 @@ namespace Dingo::Net
 		std::mt19937 m_Rng;
 		Queue m_Queue;
 		uint64_t m_NextSerial = 0;
+		std::unordered_map<PeerId, uint64_t> m_SequencedSent;
+		std::unordered_map<PeerId, uint64_t> m_SequencedReleased;
 		TimePoint m_LastReliableRelease{};
 		size_t m_HeldReliable = 0;
 	};

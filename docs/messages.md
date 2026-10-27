@@ -17,5 +17,5 @@ The message registry (`Messages.h`, `src/Messages.cpp`) and the unreliable size 
 
 ## Unreliable size cap
 
-- `MAX_UNRELIABLE_BYTES = 1100` (Steam drops a whole fragmented unreliable message); `Send` logs an error and drops a larger one.
+- `MAX_UNRELIABLE_BYTES = 1100` (Steam drops a whole fragmented unreliable message); `Send` logs an error and drops a larger one; it applies to `Unreliable` and `UnreliableSequenced`.
 - A session with epochs on allows `Session::MaxUnreliablePayload()` = 1098 (the stamp), checked by the session itself in both modes (an oversize span `Send` returns false).

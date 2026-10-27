@@ -21,8 +21,9 @@ include/DingoNet/        Public API headers: plain C++20, no platform header
 src/                     Implementations
   Internal/              Logging helpers (Internal::LogInfo...), the unreliable size check
   Platform/              Socket.h (internal socket API, one SocketError enum), Socket.cpp,
-                         WinSocket.cpp (Winsock2) | PosixSocket.cpp (BSD sockets): the only place
-                         for winsock2.h, sys/socket.h, unistd.h; premake builds one per system
+                         WinSocket.cpp (Winsock2) | PosixSocket.cpp (BSD sockets), UdpTransport.cpp
+                         (ENet): the only place for winsock2.h, sys/socket.h, unistd.h, enet.h;
+                         premake builds one socket file per system
 tests/                   DingoNet-Tests: own runner (TestFramework.h), one file per area
   steam/                 DingoNet-SteamTests (only with --steam-sdk): SteamTransport on a fake Steam
 steam/                   SteamTransport source drop, shipped in the package
@@ -70,7 +71,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 - **Reason codes, not strings**: disconnect and reject reasons are enums; the game owns the text players read.
 - **Bytes** (`Bytes.h`): `ByteWriter`/`ByteReader`, little-endian, wire-identical to Headstone's (a golden-bytes test pins it; never change an encoding without a protocol bump). Quantizers: `Coord` (centimetres in an `int16`, ±327 m), `Angle16`/`Angle8` (wrapped to [0, 360)), `Unit8` (0–1); NaN encodes as 0. A reader fails for good on the first short read and returns zeros from then on: check `Ok()` once after decoding. It holds a span, so the bytes must outlive it.
 - **Messages and unreliable size cap** (`Messages.h`): typed game messages, a router and per-id stats; unreliable packets are capped at 1100 bytes. Details: `docs/messages.md`, read it before changing messages.
-- **Transports** (`Transport.h`): TCP, loopback and the conditioner behind one `Transport` interface. Details: `docs/transports.md`, read it before changing a transport.
+- **Transports** (`Transport.h`): TCP, UDP (bundled ENet), loopback and the conditioner behind one `Transport` interface; `Delivery::UnreliableSequenced`. Details: `docs/transports.md`, read it before changing a transport.
 - **Session** (`Session.h`): handshake, seats, events, pings, timeouts and epochs over a `Transport`. Details: `docs/session.md`, read it before changing the session or its wire.
 - **Mirror** (`Mirror.h`): header-only interpolation, extrapolation and render clock for replicated state. Details: `docs/mirror.md`, read it before changing mirror code.
 
@@ -83,7 +84,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 | Vendor | Role |
 |---|---|
 | premake | Build generation (binaries only) |
-| ENet 1.3.18 (`vendor/enet/`, tag `v1.3.18` = commit `2662c0de`, MIT) | Reliable UDP for the v0.3 `UdpTransport`; compiled into `DingoNet.lib`, no API yet. Only the `*.c` files, `include/enet/*.h` and `LICENSE` of the tag are kept, never modified; the license ships as `THIRD_PARTY.txt` |
+| ENet 1.3.18 (`vendor/enet/`, tag `v1.3.18` = commit `2662c0de`, MIT) | Reliable UDP behind `UdpTransport`; compiled into `DingoNet.lib`. Only the `*.c` files, `include/enet/*.h` and `LICENSE` of the tag are kept, never modified; the license ships as `THIRD_PARTY.txt` |
 
 ENet builds without our warning flags (a per-file `warnings "Off"` filter in `premake5.lua`); on Linux the library gets ENet's `HAS_*` feature defines, and on Windows `src/Platform/EnetLink.h` is force-included into ENet's files so `ws2_32` and `winmm` reach any game that links only ENet (a `#pragma comment` in `WinSocket.cpp` would not, since a static-lib member is linked only when something references it). A game that links its own ENet must drop it.
 
@@ -104,7 +105,7 @@ See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 - **v0.1.0 Extract**: the library extracted from Headstone.
 - **v0.1.1**: the v0.1 review fixes, wire-compatible with v0.1.0.
 - **v0.2.0 Structure**: message registry, session epochs, `Mirror.h`; reviews fixed.
-- **v0.3 UDP**: a reliable-UDP transport (ENet proposed), LAN play without Steam.
+- **v0.3 UDP**: phase 1 bundles ENet, phase 2 adds `UdpTransport` and `Delivery::UnreliableSequenced` (LAN play without Steam); not released.
 - **v0.4 Engine bridge**: `DingoNet-Engine`. **v1.0 Module**: an optional DingoEngine module, listed under the engine roadmap's Modules.
 
 ## Workflow

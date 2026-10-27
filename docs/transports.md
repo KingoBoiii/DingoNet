@@ -1,6 +1,6 @@
 # Transports
 
-The `Transport` interface (`Transport.h`), `TcpTransport`, `LoopbackTransport` and `Conditioner`.
+The `Transport` interface (`Transport.h`), `TcpTransport`, `UdpTransport`, `LoopbackTransport` and `Conditioner`.
 
 ## Interface
 
@@ -22,7 +22,7 @@ The `Transport` interface (`Transport.h`), `TcpTransport`, `LoopbackTransport` a
 
 ### Sockets
 
-- Every socket call goes through `src/Platform/Socket.h`; sockets are never inherited by child processes (`SOCK_CLOEXEC`/`accept4` on Linux, `FD_CLOEXEC` elsewhere, `WSA_FLAG_NO_HANDLE_INHERIT` + `SetHandleInformation` on Windows).
+- Every socket call except ENet's own (see `UdpTransport`) goes through `src/Platform/Socket.h`; sockets are never inherited by child processes (`SOCK_CLOEXEC`/`accept4` on Linux, `FD_CLOEXEC` elsewhere, `WSA_FLAG_NO_HANDLE_INHERIT` + `SetHandleInformation` on Windows).
 - Linux sends use `MSG_NOSIGNAL` (`SO_NOSIGPIPE` where it exists), `EINTR` is retried, `WinSocket.cpp` refcounts `WSAStartup` under a mutex and carries `#pragma comment(lib, "ws2_32.lib")`, so a game linking the static lib names nothing extra.
 - Non-blocking connects finish through `PollConnect` (`select` except-set on Windows, `poll` on POSIX, then `SO_ERROR`).
 
@@ -32,5 +32,23 @@ The `Transport` interface (`Transport.h`), `TcpTransport`, `LoopbackTransport` a
 
 ## Conditioner
 
-- `Conditioner(std::unique_ptr<Transport>, ConditionerParams)` wraps any transport: lag, jitter (reliable packets never overtake each other), loss of unreliable ones only, its own `mt19937` seeded by `Seed` (99), and an optional `Clock` hook (tests and a game's net clock).
-- `Disconnect`/`Close` send what it holds first, and what it holds for a peer the inner transport reports lost is dropped (SteamIDs come back); `Dropped` counts losses.
+- `Conditioner(std::unique_ptr<Transport>, ConditionerParams)` wraps any transport: lag, jitter (reliable packets never overtake each other), loss of unreliable ones only (both kinds), its own `mt19937` seeded by `Seed` (99), and an optional `Clock` hook (tests and a game's net clock).
+- `Disconnect`/`Close` send what it holds first, and what it holds for a peer the inner transport reports lost is dropped (SteamIDs come back); `Dropped` counts losses, and an `UnreliableSequenced` packet jitter would release after a newer one to the same peer is dropped and counted too.
+
+## Delivery::UnreliableSequenced
+
+- `IsUnreliable(d)` is true for it and `Unreliable`: never delivered after a newer packet from the same peer.
+- Only `UdpTransport` enforces it; TCP, loopback and Steam treat it as `Unreliable`. The 1100-byte cap applies to both.
+- Source compatibility: it is a new `Delivery` value, so a game's exhaustive `switch` over `Delivery` needs a case or a `default`.
+
+## UdpTransport
+
+- `UdpTransport::Listen/Connect(address, port, error, UdpParams)` (`UdpTransport.h`, `src/Platform/UdpTransport.cpp`, on the bundled ENet; IPv4, port 0 picks one, `GetPort()`).
+- Three ENet channels (0 reliable, 1 `Unreliable` as unsequenced, 2 `UnreliableSequenced`). No ENet type in any public header; `enet.h` only in that file (defined `NOMINMAX`/`WIN32_LEAN_AND_MEAN` first). A refcounted `enet_initialize` under a mutex; `PeerId` is a counter, never the `ENetPeer*`.
+- Caps in `UdpParams`: 64 KB reliable packet (ENet fragments and reassembles it; a larger one is logged and dropped at the sender, and one that arrives anyway, from a peer with a bigger limit, is logged and drops that peer with `Error`, the remote seeing `Closed`; ENet's own incoming cap is set above the limit, since a datagram it refused would go unacked and the sender would only time out), 64 live peers (a peer we hung up on keeps its slot until its end acks or 2 s pass), 256 KB read per `Poll`, 5 s `ConnectTimeout`, 8 s `PeerTimeout` (above the session's 5 s, so the session times out first; `enet_peer_timeout` with min = max, since the 500 ms initial RTO makes ENet's own limit coarse).
+- A remote hang-up carries data 1 (`Closed`), data 0 on a disconnect event is `TimedOut`, a peer that never reached CONNECT is `ConnectFailed`; our own `Disconnect` raises no event (`disconnect_later`, so the queue still goes out).
+- `Close` services for at most 0.25 s so the hang-up and what was queued leave, which needs the peer to be polling: acks cannot arrive otherwise, the hang-up goes out unsequenced and the data may be lost (seen in a single-threaded test: a parting `Bye` gone, so `Left(TransportLost)` instead of `Left(Bye)`).
+- A socket failure inside ENet's service (never a lost or reset datagram) raises `Error` for every peer (`ConnectFailed` for one not yet connected), then closes the transport, which is inert like after `Close`.
+- A host that is full never answers (the client gets `ConnectFailed`); a session host trims unseated connections to 16, so a test joins its 31 clients one by one.
+- ENet raises the Windows timer resolution (`timeBeginPeriod`) while a transport is open. On Linux ENet reads the wall clock (`gettimeofday`), so a jumping clock (WSL2) can fire its timeouts early.
+- `src/Internal/UdpTestAccess.h` (tests only) drops a seeded share of the datagrams a transport receives through ENet's `intercept` callback: a `Conditioner` cannot lose a reliable packet, this loses the datagrams under it.

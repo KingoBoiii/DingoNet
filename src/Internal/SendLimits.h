@@ -10,7 +10,7 @@ namespace Dingo::Net::Internal
 
 	inline bool CheckUnreliableSize(size_t size, Delivery delivery, std::string_view transport)
 	{
-		if (delivery != Delivery::Unreliable || size <= MAX_UNRELIABLE_BYTES)
+		if (!IsUnreliable(delivery) || size <= MAX_UNRELIABLE_BYTES)
 		{
 			return true;
 		}

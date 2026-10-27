@@ -90,7 +90,7 @@ namespace Dingo::Net
 		ByteWriter writer;
 		writer.U8(Detail::IdOf<T>());
 		message.Write(writer);
-		if (static_cast<Delivery>(T::Send) == Delivery::Unreliable && writer.Size() > MAX_UNRELIABLE_BYTES)
+		if (IsUnreliable(static_cast<Delivery>(T::Send)) && writer.Size() > MAX_UNRELIABLE_BYTES)
 		{
 			Detail::LogMessageError(std::format("message {} is {} bytes encoded; an unreliable message may not exceed {}; not sent",
 				Detail::MessageName<T>(), writer.Size(), MAX_UNRELIABLE_BYTES));

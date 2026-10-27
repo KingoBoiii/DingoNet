@@ -922,7 +922,7 @@ namespace Dingo::Net
 
 	bool Session::UnreliableFits(size_t size, Delivery delivery) const
 	{
-		if (delivery == Delivery::Unreliable && size > MaxUnreliablePayload())
+		if (IsUnreliable(delivery) && size > MaxUnreliablePayload())
 		{
 			LogError("session: an unreliable packet of {} bytes is over the {} allowed; dropped", size, MaxUnreliablePayload());
 			return false;

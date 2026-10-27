@@ -54,6 +54,8 @@ namespace Dingo::Net::Internal
 
 	// Sockets (accepted ones too) are never inherited by a child process.
 	SocketHandle OpenStreamSocket(AddressFamily family, SocketError& error);
+	// For a socket something else created (ENet's): no child process inherits it from now on.
+	SocketError MakeNonInheritable(SocketHandle socket);
 	// Non-blocking, no Nagle, and (where the OS has it) no SIGPIPE.
 	SocketError ConfigureStream(SocketHandle socket);
 	// A second host on a bound port fails instead of sharing it; a restart can rebind past TIME_WAIT.

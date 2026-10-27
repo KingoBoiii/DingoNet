@@ -63,13 +63,10 @@ namespace Dingo::Net::Internal
 			return Map(errno);
 		}
 
-		[[maybe_unused]] void SetCloseOnExec(int fd)
+		bool SetCloseOnExec(int fd)
 		{
 			const int flags = fcntl(fd, F_GETFD, 0);
-			if (flags >= 0)
-			{
-				fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
-			}
+			return flags >= 0 && fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
 		}
 
 		void ToNative(const SocketAddress& address, sockaddr_in& out)
@@ -132,6 +129,11 @@ namespace Dingo::Net::Internal
 #endif
 		error = SocketError::None;
 		return static_cast<SocketHandle>(s);
+	}
+
+	SocketError MakeNonInheritable(SocketHandle socket)
+	{
+		return SetCloseOnExec(static_cast<int>(socket)) ? SocketError::None : LastError();
 	}
 
 	SocketError ConfigureStream(SocketHandle socket)

@@ -318,7 +318,7 @@ namespace Dingo::Net
 		template<NetMessage T>
 		bool FitsUnreliable(size_t size) const
 		{
-			if (static_cast<Delivery>(T::Send) == Delivery::Unreliable && size > MaxUnreliablePayload())
+			if (IsUnreliable(static_cast<Delivery>(T::Send)) && size > MaxUnreliablePayload())
 			{
 				Detail::LogMessageError(std::format("message {} is {} bytes encoded; an unreliable message may not exceed {} here; not sent",
 					Detail::MessageName<T>(), size, MaxUnreliablePayload()));

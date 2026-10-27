@@ -75,7 +75,18 @@ namespace Dingo::Net
 
 	Conditioner::Queue::iterator Conditioner::Release(Queue::iterator it)
 	{
-		m_Inner->Send(it->second.To, it->second.Data, it->second.Mode);
+		const Held& held = it->second;
+		if (held.Mode == Delivery::UnreliableSequenced)
+		{
+			uint64_t& newest = m_SequencedReleased[held.To];
+			if (held.Sequence < newest)
+			{
+				Dropped++;
+				return Remove(it);
+			}
+			newest = held.Sequence;
+		}
+		m_Inner->Send(held.To, held.Data, held.Mode);
 		return Remove(it);
 	}
 
@@ -92,7 +103,7 @@ namespace Dingo::Net
 			return;
 		}
 
-		if (delivery == Delivery::Unreliable && m_Params.Loss > 0.0f && std::uniform_real_distribution<float>(0.0f, 1.0f)(m_Rng) < m_Params.Loss)
+		if (IsUnreliable(delivery) && m_Params.Loss > 0.0f && std::uniform_real_distribution<float>(0.0f, 1.0f)(m_Rng) < m_Params.Loss)
 		{
 			Dropped++;
 			return;
@@ -115,7 +126,8 @@ namespace Dingo::Net
 			m_LastReliableRelease = release;
 			m_HeldReliable++;
 		}
-		m_Queue.emplace(std::make_pair(release, m_NextSerial++), Held{ to, delivery, std::vector<uint8_t>(data.begin(), data.end()) });
+		const uint64_t sequence = delivery == Delivery::UnreliableSequenced ? ++m_SequencedSent[to] : 0;
+		m_Queue.emplace(std::make_pair(release, m_NextSerial++), Held{ to, delivery, sequence, std::vector<uint8_t>(data.begin(), data.end()) });
 	}
 
 	void Conditioner::Poll(std::vector<Packet>& packets, std::vector<PeerEvent>& events)
@@ -141,6 +153,8 @@ namespace Dingo::Net
 			{
 				it = it->second.To == events[i].Peer ? Remove(it) : std::next(it);
 			}
+			m_SequencedSent.erase(events[i].Peer);
+			m_SequencedReleased.erase(events[i].Peer);
 		}
 	}
 
@@ -150,6 +164,8 @@ namespace Dingo::Net
 		{
 			it = it->second.To == peer ? Release(it) : std::next(it);
 		}
+		m_SequencedSent.erase(peer);
+		m_SequencedReleased.erase(peer);
 		m_Inner->Disconnect(peer);
 		SyncCounters();
 	}
