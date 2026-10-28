@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Dingo::Net::Internal
 {
@@ -57,6 +58,9 @@ namespace Dingo::Net::Internal
 	// Non-blocking datagram socket, not inherited by a child process; Bind it to receive.
 	SocketHandle OpenUdpSocket(AddressFamily family, SocketError& error);
 	SocketError SetBroadcast(SocketHandle socket, bool enabled);
+	// The directed broadcast address (subnet | ~mask) of every up, non-loopback IPv4 interface that can broadcast: a limited
+	// broadcast leaves one adapter only, and a VPN or virtual switch can be the one the OS picks.
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port);
 	// For a socket something else created (ENet's): no child process inherits it from now on.
 	SocketError MakeNonInheritable(SocketHandle socket);
 	// Non-blocking, no Nagle, and (where the OS has it) no SIGPIPE.

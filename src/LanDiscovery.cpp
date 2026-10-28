@@ -320,7 +320,18 @@ namespace Dingo::Net
 			ParseAddress(m_Params.QueryAddress, m_Params.Port, target);
 			const std::vector<uint8_t> query = EncodeQuery(m_Params.Protocol);
 			SocketError error = SocketError::None;
-			if (SendTo(m_Socket, query.data(), query.size(), target, error) >= 0)
+			bool sent = SendTo(m_Socket, query.data(), query.size(), target, error) >= 0;
+			if (m_Params.QueryAddress == "255.255.255.255")
+			{
+				std::vector<SocketAddress> directed;
+				ListBroadcastAddresses(directed, m_Params.Port);
+				for (const SocketAddress& to : directed)
+				{
+					SocketError directedError = SocketError::None;
+					sent = SendTo(m_Socket, query.data(), query.size(), to, directedError) >= 0 || sent;
+				}
+			}
+			if (sent)
 			{
 				m_QueriesSent++;
 			}

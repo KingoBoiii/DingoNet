@@ -31,5 +31,5 @@
 - Windows turns off `SIO_UDP_CONNRESET`, or an ICMP port-unreachable for an earlier query makes a later `recvfrom` fail with `WSAECONNRESET`.
 - Replies are unauthenticated: a peer on the LAN can fill the 64-entry list with fake sources or forge an entry. Accepted for LAN play; a game still validates in the session handshake.
 - A custom `NameFilter` runs on raw bytes and the result is cut at 64 bytes, which can split a multi-byte character.
-- A broadcast goes out the default adapter only (a VPN or second NIC can swallow it: check by hand on the real LAN). WSL2 in NAT mode does not pass broadcasts: the real-LAN check is by hand (mirrored networking or two machines).
+- A query to "255.255.255.255" (the default) is also sent to each up IPv4 interface's directed broadcast (subnet | ~mask), because a limited broadcast leaves one adapter only and a VPN or virtual switch (Hyper-V, WSL) can be the one the OS picks. WSL2 in NAT mode does not pass broadcasts, and mirrored mode shares the Windows IP so replies never cross: the real-LAN check is by hand (bridged networking or two machines).
 - Tests address the host directly (`QueryAddress` "127.0.0.1"), since CI runners cannot be relied on for broadcast.

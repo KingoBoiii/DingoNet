@@ -1,6 +1,8 @@
 #include "Platform/Socket.h"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -350,6 +352,36 @@ namespace Dingo::Net::Internal
 			return LastError();
 		}
 		return SocketError::None;
+	}
+
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port)
+	{
+		ifaddrs* list = nullptr;
+		if (getifaddrs(&list) != 0)
+		{
+			return;
+		}
+		for (const ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next)
+		{
+			if (entry->ifa_addr == nullptr || entry->ifa_broadaddr == nullptr || entry->ifa_addr->sa_family != AF_INET)
+			{
+				continue;
+			}
+			if ((entry->ifa_flags & (IFF_UP | IFF_BROADCAST)) != (IFF_UP | IFF_BROADCAST) || (entry->ifa_flags & IFF_LOOPBACK))
+			{
+				continue;
+			}
+			const uint32_t directed = reinterpret_cast<const sockaddr_in*>(entry->ifa_broadaddr)->sin_addr.s_addr;
+			if (directed == 0xFFFFFFFFu)
+			{
+				continue;
+			}
+			SocketAddress to;
+			to.Port = port;
+			std::memcpy(to.Bytes.data(), &directed, sizeof(directed));
+			out.push_back(to);
+		}
+		freeifaddrs(list);
 	}
 
 	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error)

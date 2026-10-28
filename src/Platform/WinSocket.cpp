@@ -9,6 +9,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <array>
 #include <climits>
 #include <cstring>
 #include <mutex>
@@ -321,6 +322,41 @@ namespace Dingo::Net::Internal
 			return LastError();
 		}
 		return SocketError::None;
+	}
+
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port)
+	{
+		const SOCKET probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (probe == INVALID_SOCKET)
+		{
+			return;
+		}
+		std::array<INTERFACE_INFO, 32> interfaces;
+		DWORD bytes = 0;
+		if (WSAIoctl(probe, SIO_GET_INTERFACE_LIST, nullptr, 0, interfaces.data(), static_cast<DWORD>(sizeof(interfaces)), &bytes, nullptr, nullptr) == 0)
+		{
+			const size_t count = bytes / sizeof(INTERFACE_INFO);
+			for (size_t i = 0; i < count; i++)
+			{
+				const INTERFACE_INFO& info = interfaces[i];
+				if (info.iiAddress.Address.sa_family != AF_INET || !(info.iiFlags & IFF_UP) || !(info.iiFlags & IFF_BROADCAST) || (info.iiFlags & IFF_LOOPBACK))
+				{
+					continue;
+				}
+				const uint32_t address = info.iiAddress.AddressIn.sin_addr.s_addr;
+				const uint32_t mask = info.iiNetmask.AddressIn.sin_addr.s_addr;
+				const uint32_t directed = address | ~mask;
+				if (mask == 0xFFFFFFFFu || directed == 0xFFFFFFFFu)
+				{
+					continue;
+				}
+				SocketAddress to;
+				to.Port = port;
+				std::memcpy(to.Bytes.data(), &directed, sizeof(directed));
+				out.push_back(to);
+			}
+		}
+		closesocket(probe);
 	}
 
 	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error)
