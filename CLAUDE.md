@@ -78,7 +78,7 @@ Do not write code comments unless absolutely necessary. A comment must earn its 
 
 ## Tests
 
-`DingoNet-Tests` uses its own runner (`tests/TestFramework.h`): `TEST(name)` registers a case, `CHECK(cond)` records a failure with file and line, and `main` prints `PASS`/`FAIL` per case and a summary, exiting non-zero on any failure. The whole run stays around 3 s on Windows and under 1 s on Linux; a test that slows it is a bug. Rigs, per-file coverage and the cross-OS check (`--tcp-host`/`--tcp-client`): `docs/tests.md`.
+`DingoNet-Tests` uses its own runner (`tests/TestFramework.h`): `TEST(name)` registers a case, `CHECK(cond)` records a failure with file and line, and `main` prints `PASS`/`FAIL` per case and a summary, exiting non-zero on any failure. The whole run (191 tests) takes about 34 s on Windows Debug and 23-34 s on Linux, mostly the UDP tests (real timeouts and retransmits); a test that adds more than a second needs a reason. Rigs, per-file coverage and the cross-OS check (`--tcp-host`/`--tcp-client`): `docs/tests.md`.
 
 ## Third-party vendors
 
@@ -106,7 +106,7 @@ See `.claude/plans/2026-10-12-dingonet-plan.md` ("Versions").
 - **v0.1.0 Extract**: the library extracted from Headstone.
 - **v0.1.1**: the v0.1 review fixes, wire-compatible with v0.1.0.
 - **v0.2.0 Structure**: message registry, session epochs, `Mirror.h`; reviews fixed.
-- **v0.3 UDP**: phase 1 bundles ENet, phase 2 adds `UdpTransport` and `Delivery::UnreliableSequenced` (LAN play without Steam), phase 3 LAN discovery; not released.
+- **v0.3.0 UDP**: ENet 1.3.18 bundled, `UdpTransport` and `Delivery::UnreliableSequenced` (`docs/transports.md`), LAN discovery (`docs/discovery.md`); the Opus review (`.claude/reviews/2026-10-27-v0.3-review.md`, F1-F8) is fixed. `k_SessionProtocol` stays 2. Open Low findings 2, 5 and 6 of the phase 2 diff review are known (see the plan's As-built notes).
 - **v0.4 Engine bridge**: `DingoNet-Engine`. **v1.0 Module**: an optional DingoEngine module, listed under the engine roadmap's Modules.
 
 ## Workflow

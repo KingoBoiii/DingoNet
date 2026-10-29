@@ -630,7 +630,29 @@ Changes from the design above:
   the amplification bound, expiry. A real-LAN broadcast check runs by hand (WSL2 in NAT mode doesn't
   pass broadcasts; mirrored networking or two machines).
 
+**As built (2026-10-27)**: `5f65770`, PR #16 (`tests/LanDiscoveryTests.cpp`; protocol and limits in
+`docs/discovery.md`). Changes from the design above:
+
+- **Directed broadcast.** A query to `255.255.255.255` also goes to each up IPv4 interface's directed
+  broadcast (`subnet | ~mask`), because a limited broadcast leaves one adapter only and a VPN or a virtual
+  switch (Hyper-V, WSL) can be the one the OS picks (`73deb98`). Tests still address the host directly.
+- **Real-LAN checks** (`--lan-host`/`--lan-browse` in `tests/NetCheck.cpp`): single machine, and Windows↔Linux
+  both ways under WSL2 mirrored networking. NAT mode does not pass broadcasts.
+- Windows turns off `SIO_UDP_CONNRESET` on the discovery socket.
+
+**Review (2026-10-27)**: the Opus review of the whole v0.3 diff
+(`.claude/reviews/2026-10-27-v0.3-review.md`, 1 High, 3 Medium, 4 Low) is fixed: F1-F6 in `UdpTransport` on
+`fix/v0.3-udp-review`, F7 (`DecodeQuery` strict) and F8 (`LanBrowserParams` timings clamped) on the discovery
+branch; the report stays unedited, the fixes are in `2026-10-27-v0.3-review-fixes.md`. F1 now closes the
+transport only after a full second of failed socket calls, F2 trims half-open connects, F3 caps a peer's queue,
+F4 charges each event against the read budget. 191 tests in all; PR #17.
+
+**Still open**: Low findings 2, 5 and 6 of the phase 2 diff review, left on purpose.
+
 ### Phase 4 — release v0.3.0 (~1.5 h)
+**As built (2026-10-29)**: `docs/v0.3-release`: `VERSION` 0.3, README, `CLAUDE.md` Roadmap and test timing
+(about 34 s on Windows Debug, 23-34 s on Linux, mostly UDP), `CHANGELOG.md`, these notes. Cross-OS checks done
+before: UDP Windows↔Linux (200/200) and LAN broadcast both ways. The owner publishes `v0.3.0`.
 
 - The cross-OS UDP `NetCheck`, and one broadcast discovery run on a real LAN.
 - An Opus review of the whole v0.3 diff before the tag, with its findings fixed.
