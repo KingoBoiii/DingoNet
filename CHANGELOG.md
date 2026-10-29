@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0
+
+- Phase 1 bundles ENet 1.3.18 (commit `2662c0de`, MIT) into `DingoNet.lib`; its license ships as `THIRD_PARTY.txt`.
+- Phase 2 `UdpTransport` on ENet with `Delivery::UnreliableSequenced` (a new enum value: a game's exhaustive `switch` over `Delivery` needs a case or a `default`). Details: `docs/transports.md`.
+- Phase 3 LAN discovery, `LanHost` and `LanBrowser` (query/response over raw UDP, queries also sent to each interface's directed broadcast). Details: `docs/discovery.md`.
+- The Opus review (`.claude/reviews/2026-10-27-v0.3-review.md`, F1–F8) is fixed (`.claude/reviews/2026-10-27-v0.3-review-fixes.md`).
+- The session wire is unchanged (`k_SessionProtocol` stays 2). 191 tests on Windows and Linux; checked Windows↔Linux over UDP and by LAN broadcast in both directions.
+- Released `v0.3.0`, build and date to fill in at the release.
+
 ## v0.2.0
 
 - Released `v0.2.0`, build 40, 2026-10-22.
