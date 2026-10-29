@@ -9,6 +9,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <array>
 #include <climits>
 #include <cstring>
 #include <mutex>
@@ -288,6 +289,110 @@ namespace Dingo::Net::Internal
 		}
 		error = SocketError::None;
 		return got;
+	}
+
+	SocketHandle OpenUdpSocket(AddressFamily, SocketError& error)
+	{
+		const SOCKET s = WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+		if (s == INVALID_SOCKET)
+		{
+			error = LastError();
+			return INVALID_SOCKET_HANDLE;
+		}
+		u_long nonBlocking = 1;
+		if (ioctlsocket(s, FIONBIO, &nonBlocking) != 0)
+		{
+			error = LastError();
+			closesocket(s);
+			return INVALID_SOCKET_HANDLE;
+		}
+		// SIO_UDP_CONNRESET (mswsock.h). Otherwise an ICMP port-unreachable for an earlier send makes a later recvfrom fail with WSAECONNRESET.
+		BOOL newBehavior = FALSE;
+		DWORD returned = 0;
+		WSAIoctl(s, _WSAIOW(IOC_VENDOR, 12), &newBehavior, sizeof(newBehavior), nullptr, 0, &returned, nullptr, nullptr);
+		error = SocketError::None;
+		return static_cast<SocketHandle>(s);
+	}
+
+	SocketError SetBroadcast(SocketHandle socket, bool enabled)
+	{
+		BOOL value = enabled ? TRUE : FALSE;
+		if (setsockopt(Native(socket), SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&value), sizeof(value)) != 0)
+		{
+			return LastError();
+		}
+		return SocketError::None;
+	}
+
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port)
+	{
+		const SOCKET probe = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		if (probe == INVALID_SOCKET)
+		{
+			return;
+		}
+		std::array<INTERFACE_INFO, 32> interfaces;
+		DWORD bytes = 0;
+		if (WSAIoctl(probe, SIO_GET_INTERFACE_LIST, nullptr, 0, interfaces.data(), static_cast<DWORD>(sizeof(interfaces)), &bytes, nullptr, nullptr) == 0)
+		{
+			const size_t count = bytes / sizeof(INTERFACE_INFO);
+			for (size_t i = 0; i < count; i++)
+			{
+				const INTERFACE_INFO& info = interfaces[i];
+				if (info.iiAddress.Address.sa_family != AF_INET || !(info.iiFlags & IFF_UP) || !(info.iiFlags & IFF_BROADCAST) || (info.iiFlags & IFF_LOOPBACK))
+				{
+					continue;
+				}
+				const uint32_t address = info.iiAddress.AddressIn.sin_addr.s_addr;
+				const uint32_t mask = info.iiNetmask.AddressIn.sin_addr.s_addr;
+				const uint32_t directed = address | ~mask;
+				if (mask == 0xFFFFFFFFu || directed == 0xFFFFFFFFu)
+				{
+					continue;
+				}
+				SocketAddress to;
+				to.Port = port;
+				std::memcpy(to.Bytes.data(), &directed, sizeof(directed));
+				out.push_back(to);
+			}
+		}
+		closesocket(probe);
+	}
+
+	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error)
+	{
+		sockaddr_in native;
+		ToNative(to, native);
+		const int length = static_cast<int>(size < static_cast<size_t>(INT_MAX) ? size : static_cast<size_t>(INT_MAX));
+		const int sent = sendto(Native(socket), reinterpret_cast<const char*>(data), length, 0, reinterpret_cast<const sockaddr*>(&native), sizeof(native));
+		if (sent == SOCKET_ERROR)
+		{
+			error = LastError();
+			return -1;
+		}
+		error = SocketError::None;
+		return sent;
+	}
+
+	ptrdiff_t RecvFrom(SocketHandle socket, uint8_t* buffer, size_t size, SocketAddress& from, SocketError& error)
+	{
+		sockaddr_in native{};
+		int nativeLength = sizeof(native);
+		const int length = static_cast<int>(size < static_cast<size_t>(INT_MAX) ? size : static_cast<size_t>(INT_MAX));
+		const int got = recvfrom(Native(socket), reinterpret_cast<char*>(buffer), length, 0, reinterpret_cast<sockaddr*>(&native), &nativeLength);
+		if (got == SOCKET_ERROR && WSAGetLastError() != WSAEMSGSIZE)
+		{
+			error = LastError();
+			return -1;
+		}
+		// A datagram that did not fit is cut and consumed, as on POSIX: the size comes back as the buffer's.
+		const int received = got == SOCKET_ERROR ? length : got;
+		from = {};
+		from.Family = AddressFamily::IPv4;
+		from.Port = ntohs(native.sin_port);
+		std::memcpy(from.Bytes.data(), &native.sin_addr, 4);
+		error = SocketError::None;
+		return received;
 	}
 
 	void ShutdownSend(SocketHandle socket)

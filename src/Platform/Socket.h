@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Dingo::Net::Internal
 {
@@ -54,6 +55,12 @@ namespace Dingo::Net::Internal
 
 	// Sockets (accepted ones too) are never inherited by a child process.
 	SocketHandle OpenStreamSocket(AddressFamily family, SocketError& error);
+	// Non-blocking datagram socket, not inherited by a child process; Bind it to receive.
+	SocketHandle OpenUdpSocket(AddressFamily family, SocketError& error);
+	SocketError SetBroadcast(SocketHandle socket, bool enabled);
+	// The directed broadcast address (subnet | ~mask) of every up, non-loopback IPv4 interface that can broadcast: a limited
+	// broadcast leaves one adapter only, and a VPN or virtual switch can be the one the OS picks.
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port);
 	// For a socket something else created (ENet's): no child process inherits it from now on.
 	SocketError MakeNonInheritable(SocketHandle socket);
 	// Non-blocking, no Nagle, and (where the OS has it) no SIGPIPE.
@@ -73,6 +80,13 @@ namespace Dingo::Net::Internal
 	// Bytes moved; 0 from Receive is an orderly close; -1 sets error (WouldBlock when nothing moved).
 	ptrdiff_t Send(SocketHandle socket, const uint8_t* data, size_t size, SocketError& error);
 	ptrdiff_t Receive(SocketHandle socket, uint8_t* buffer, size_t size, SocketError& error);
+
+	// Bytes sent, or -1 with error set (WouldBlock when the buffer is full).
+	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error);
+	// Bytes in one datagram, or -1 with error set (WouldBlock when none waits); a datagram larger than the buffer
+	// is cut or fails, and a caller treats either as malformed. The ICMP resets an earlier SendTo may bring back are
+	// swallowed, so a failure here is the socket's own.
+	ptrdiff_t RecvFrom(SocketHandle socket, uint8_t* buffer, size_t size, SocketAddress& from, SocketError& error);
 
 	void ShutdownSend(SocketHandle socket);
 	void CloseSocket(SocketHandle socket);
