@@ -1,13 +1,16 @@
 #include "NetCheck.h"
 #include "TransportTestUtils.h"
 
+#include <DingoNet/LanDiscovery.h>
 #include <DingoNet/TcpTransport.h>
 #include <DingoNet/UdpTransport.h>
 
 #include <charconv>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace Dingo::Net;
@@ -184,10 +187,89 @@ namespace
 		return pass ? 0 : 1;
 	}
 
+	uint16_t PortOrDefault(std::string_view text)
+	{
+		unsigned value = 0;
+		if (!text.empty() && std::from_chars(text.data(), text.data() + text.size(), value).ec == std::errc() && value > 0 && value <= 65535)
+		{
+			return static_cast<uint16_t>(value);
+		}
+		return LAN_DEFAULT_PORT;
+	}
+
+	int RunLanHost(std::string_view portText)
+	{
+		LanHostParams params;
+		params.Port = PortOrDefault(portText);
+		params.Name = std::string("NetCheck-") + PLATFORM;
+		std::string error;
+		auto host = LanHost::Open(params, error);
+		if (!host)
+		{
+			std::printf("lan host: %s\n", error.c_str());
+			return 1;
+		}
+		std::printf("lan host '%s' answering on port %u for 60 s\n", params.Name.c_str(), static_cast<unsigned>(host->GetPort()));
+		uint64_t reported = 0;
+		for (int i = 0; i < 6000; i++)
+		{
+			host->Poll();
+			if (host->Answered() != reported)
+			{
+				reported = host->Answered();
+				std::printf("answered %llu quer%s\n", static_cast<unsigned long long>(reported), reported == 1 ? "y" : "ies");
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return 0;
+	}
+
+	int RunLanBrowse(std::string_view portText)
+	{
+		LanBrowserParams params;
+		params.Port = PortOrDefault(portText);
+		std::string error;
+		auto browser = LanBrowser::Open(params, error);
+		if (!browser)
+		{
+			std::printf("lan browse: %s\n", error.c_str());
+			return 1;
+		}
+		std::printf("browsing port %u by broadcast for 10 s\n", static_cast<unsigned>(params.Port));
+		size_t shown = 0;
+		for (int i = 0; i < 1000; i++)
+		{
+			browser->Poll();
+			for (; shown < browser->Hosts().size(); shown++)
+			{
+				const LanHostInfo& info = browser->Hosts()[shown];
+				std::printf("found '%s' at %s (game port %u, seats %d/%d)\n", info.Name.c_str(), info.Source.c_str(), static_cast<unsigned>(info.GamePort), info.SeatsTaken, info.SeatsMax);
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		std::printf("%zu host(s) found\n", browser->Hosts().size());
+		return browser->Hosts().empty() ? 1 : 0;
+	}
+
 }
 
 int RunNetCheck(std::string_view argument)
 {
+	constexpr std::string_view LAN_HOST = "--lan-host";
+	constexpr std::string_view LAN_BROWSE = "--lan-browse";
+	const auto portAfter = [](std::string_view arg, std::string_view flag)
+	{
+		return arg.size() > flag.size() + 1 ? arg.substr(flag.size() + 1) : std::string_view();
+	};
+	if (argument.starts_with(LAN_HOST))
+	{
+		return RunLanHost(portAfter(argument, LAN_HOST));
+	}
+	if (argument.starts_with(LAN_BROWSE))
+	{
+		return RunLanBrowse(portAfter(argument, LAN_BROWSE));
+	}
+
 	constexpr std::string_view TCP_HOST = "--tcp-host=";
 	constexpr std::string_view TCP_CLIENT = "--tcp-client=";
 	constexpr std::string_view UDP_HOST = "--udp-host=";

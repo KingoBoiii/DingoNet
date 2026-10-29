@@ -1,6 +1,8 @@
 #include "Platform/Socket.h"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -317,6 +319,113 @@ namespace Dingo::Net::Internal
 			error = LastError();
 			return -1;
 		}
+		error = SocketError::None;
+		return static_cast<ptrdiff_t>(got);
+	}
+
+	SocketHandle OpenUdpSocket(AddressFamily, SocketError& error)
+	{
+#ifdef SOCK_CLOEXEC
+		const int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+#else
+		const int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+#endif
+		if (s < 0)
+		{
+			error = LastError();
+			return INVALID_SOCKET_HANDLE;
+		}
+#ifndef SOCK_CLOEXEC
+		SetCloseOnExec(s);
+#endif
+		const int flags = fcntl(s, F_GETFL, 0);
+		if (flags < 0 || fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0)
+		{
+			error = LastError();
+			close(s);
+			return INVALID_SOCKET_HANDLE;
+		}
+		error = SocketError::None;
+		return static_cast<SocketHandle>(s);
+	}
+
+	SocketError SetBroadcast(SocketHandle socket, bool enabled)
+	{
+		int value = enabled ? 1 : 0;
+		if (setsockopt(Native(socket), SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) != 0)
+		{
+			return LastError();
+		}
+		return SocketError::None;
+	}
+
+	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port)
+	{
+		ifaddrs* list = nullptr;
+		if (getifaddrs(&list) != 0)
+		{
+			return;
+		}
+		for (const ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next)
+		{
+			if (entry->ifa_addr == nullptr || entry->ifa_broadaddr == nullptr || entry->ifa_addr->sa_family != AF_INET)
+			{
+				continue;
+			}
+			if ((entry->ifa_flags & (IFF_UP | IFF_BROADCAST)) != (IFF_UP | IFF_BROADCAST) || (entry->ifa_flags & IFF_LOOPBACK))
+			{
+				continue;
+			}
+			const uint32_t directed = reinterpret_cast<const sockaddr_in*>(entry->ifa_broadaddr)->sin_addr.s_addr;
+			if (directed == 0xFFFFFFFFu)
+			{
+				continue;
+			}
+			SocketAddress to;
+			to.Port = port;
+			std::memcpy(to.Bytes.data(), &directed, sizeof(directed));
+			out.push_back(to);
+		}
+		freeifaddrs(list);
+	}
+
+	ptrdiff_t SendTo(SocketHandle socket, const uint8_t* data, size_t size, const SocketAddress& to, SocketError& error)
+	{
+		sockaddr_in native;
+		ToNative(to, native);
+		ssize_t sent;
+		do
+		{
+			sent = sendto(Native(socket), data, size, DN_SEND_FLAGS, reinterpret_cast<const sockaddr*>(&native), sizeof(native));
+		} while (sent < 0 && errno == EINTR);
+		if (sent < 0)
+		{
+			error = LastError();
+			return -1;
+		}
+		error = SocketError::None;
+		return static_cast<ptrdiff_t>(sent);
+	}
+
+	ptrdiff_t RecvFrom(SocketHandle socket, uint8_t* buffer, size_t size, SocketAddress& from, SocketError& error)
+	{
+		sockaddr_in native{};
+		socklen_t length = sizeof(native);
+		ssize_t got;
+		do
+		{
+			length = sizeof(native);
+			got = recvfrom(Native(socket), buffer, size, 0, reinterpret_cast<sockaddr*>(&native), &length);
+		} while (got < 0 && errno == EINTR);
+		if (got < 0)
+		{
+			error = LastError();
+			return -1;
+		}
+		from = {};
+		from.Family = AddressFamily::IPv4;
+		from.Port = ntohs(native.sin_port);
+		std::memcpy(from.Bytes.data(), &native.sin_addr, 4);
 		error = SocketError::None;
 		return static_cast<ptrdiff_t>(got);
 	}
