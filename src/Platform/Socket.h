@@ -63,6 +63,9 @@ namespace Dingo::Net::Internal
 	void ListBroadcastAddresses(std::vector<SocketAddress>& out, uint16_t port);
 	// For a socket something else created (ENet's): no child process inherits it from now on.
 	SocketError MakeNonInheritable(SocketHandle socket);
+	// Windows: an ICMP port-unreachable for an earlier send no longer fails the next receive on this UDP socket
+	// (SIO_UDP_CONNRESET off). A no-op on POSIX, where an unconnected UDP socket ignores ICMP errors.
+	SocketError DisableUdpConnReset(SocketHandle socket);
 	// Non-blocking, no Nagle, and (where the OS has it) no SIGPIPE.
 	SocketError ConfigureStream(SocketHandle socket);
 	// A second host on a bound port fails instead of sharing it; a restart can rebind past TIME_WAIT.
@@ -95,6 +98,8 @@ namespace Dingo::Net::Internal
 
 	// The OS error code behind the last failure on this thread.
 	int LastNativeSocketError();
+	// The OS error code as it stands (WSAGetLastError, errno), for a failure inside code that does not report it (ENet).
+	int CurrentNativeSocketError();
 	const char* ToString(SocketError error);
 	std::string DescribeLastSocketError(SocketError error);
 

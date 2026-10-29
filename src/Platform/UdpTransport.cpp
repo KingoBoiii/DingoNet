@@ -18,6 +18,7 @@
 #include <cmath>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <random>
 
 namespace Dingo::Net
@@ -36,6 +37,13 @@ namespace Dingo::Net
 		constexpr double CLOSE_FLUSH_SECONDS = 0.25;
 		constexpr double HANGUP_LINGER_SECONDS = 2.0;
 		constexpr int MAX_PEERS = ENET_PROTOCOL_MAXIMUM_PEER_ID;
+		// Charged per event against the read budget, so empty packets can't bypass it.
+		constexpr size_t EVENT_COST_BYTES = 64;
+		constexpr int MAX_FAILED_SERVICES_PER_POLL = 4;
+		constexpr std::chrono::seconds SOCKET_FAILURE_CLOSE{ 1 };
+		constexpr std::chrono::seconds SOCKET_FAILURE_WARN_INTERVAL{ 10 };
+		// Matches the handshakes a session host keeps; a half-open connect holds a slot that ENet would keep ~31 s.
+		constexpr size_t MAX_PENDING_CONNECTS = 16;
 
 		std::mutex s_LibraryMutex;
 		int s_LibraryUsers = 0;
@@ -67,33 +75,64 @@ namespace Dingo::Net
 			return static_cast<enet_uint32>(clamped);
 		}
 
-		struct DatagramLoss
+		bool IsPendingConnect(const ENetPeer& peer)
+		{
+			return !peer.data && (peer.state == ENET_PEER_STATE_ACKNOWLEDGING_CONNECT || peer.state == ENET_PEER_STATE_CONNECTION_PENDING);
+		}
+
+		struct DatagramHook
 		{
 			ENetHost* Host = nullptr;
 			float Share = 0.0f;
 			std::mt19937 Rng;
+			int Failures = 0;
 		};
 
-		std::mutex s_LossMutex;
-		std::vector<DatagramLoss> s_Loss;
+		std::mutex s_HookMutex;
+		std::vector<DatagramHook> s_Hooks;
 
-		int ENET_CALLBACK DropDatagram(ENetHost* host, ENetEvent*)
+		int ENET_CALLBACK InterceptDatagram(ENetHost* host, ENetEvent*)
 		{
-			std::lock_guard lock(s_LossMutex);
-			for (DatagramLoss& loss : s_Loss)
+			std::lock_guard lock(s_HookMutex);
+			for (DatagramHook& hook : s_Hooks)
 			{
-				if (loss.Host == host)
+				if (hook.Host == host)
 				{
-					return std::uniform_real_distribution<float>(0.0f, 1.0f)(loss.Rng) < loss.Share ? 1 : 0;
+					if (hook.Failures > 0)
+					{
+						hook.Failures--;
+						return -1;
+					}
+					return std::uniform_real_distribution<float>(0.0f, 1.0f)(hook.Rng) < hook.Share ? 1 : 0;
 				}
 			}
 			return 0;
 		}
 
-		void ClearDatagramLoss(ENetHost* host)
+		template<typename Change>
+		void ChangeDatagramHook(ENetHost* host, Change change)
 		{
-			std::lock_guard lock(s_LossMutex);
-			std::erase_if(s_Loss, [host](const DatagramLoss& loss) { return loss.Host == host; });
+			std::lock_guard lock(s_HookMutex);
+			auto it = std::find_if(s_Hooks.begin(), s_Hooks.end(), [host](const DatagramHook& hook) { return hook.Host == host; });
+			if (it == s_Hooks.end())
+			{
+				s_Hooks.push_back(DatagramHook{ host, 0.0f, std::mt19937(), 0 });
+				it = s_Hooks.end() - 1;
+			}
+			change(*it);
+			if (it->Share <= 0.0f && it->Failures <= 0)
+			{
+				s_Hooks.erase(it);
+				host->intercept = nullptr;
+				return;
+			}
+			host->intercept = &InterceptDatagram;
+		}
+
+		void ClearDatagramHook(ENetHost* host)
+		{
+			std::lock_guard lock(s_HookMutex);
+			std::erase_if(s_Hooks, [host](const DatagramHook& hook) { return hook.Host == host; });
 			if (host)
 			{
 				host->intercept = nullptr;
@@ -111,13 +150,36 @@ namespace Dingo::Net
 			bool Connected = false;
 			// We hung up: nothing more is delivered from or to it, and its end raises no event.
 			bool Closing = false;
+			bool SendFailed = false;
+			// Bytes of the packets ENet still holds for it. Their free callback points at this record, so a record is
+			// destroyed only after ENet has reset its peer (or destroyed the host).
+			size_t Queued = 0;
+		};
+
+		struct PendingConnect
+		{
+			ENetPeer* Link = nullptr;
+			enet_uint32 ConnectId = 0;
+			Clock::time_point Since;
 		};
 
 		UdpParams Params;
+		size_t Channels = CHANNEL_COUNT;
 		ENetHost* Host = nullptr;
 		bool Library = false;
 		std::vector<std::unique_ptr<PeerRecord>> Peers;
+		// Oldest first.
+		std::vector<PendingConnect> Pending;
 		PeerId NextId = 1;
+		std::optional<Clock::time_point> FailingSince;
+		std::optional<Clock::time_point> LastFailureWarning;
+		int FailuresSinceWarning = 0;
+
+		static void ENET_CALLBACK Released(ENetPacket* packet)
+		{
+			PeerRecord* record = static_cast<PeerRecord*>(packet->userData);
+			record->Queued -= (std::min)(record->Queued, packet->dataLength);
+		}
 
 		PeerRecord* Find(PeerId id)
 		{
@@ -172,6 +234,94 @@ namespace Dingo::Net
 		{
 			enet_peer_timeout(record.Link, 0, Millis(seconds), Millis(seconds));
 		}
+
+		// A send error to one unroutable address, or an ICMP-driven receive error, is a lost datagram, not a dead
+		// socket: ENet's peer timeouts drop a peer that stays unreachable. True once every call has failed for 1 s.
+		bool SocketFailed(Clock::time_point now, int code)
+		{
+			if (!FailingSince)
+			{
+				FailingSince = now;
+			}
+			FailuresSinceWarning++;
+			if (!LastFailureWarning || now - *LastFailureWarning >= SOCKET_FAILURE_WARN_INTERVAL)
+			{
+				Internal::LogWarn("udp: a send or receive failed {} time(s) since the last warning (OS error {}); carrying on", FailuresSinceWarning, code);
+				LastFailureWarning = now;
+				FailuresSinceWarning = 0;
+			}
+			return now - *FailingSince >= SOCKET_FAILURE_CLOSE;
+		}
+
+		void DropOverfull(std::vector<PeerEvent>& events)
+		{
+			for (size_t i = 0; i < Peers.size();)
+			{
+				PeerRecord* record = Peers[i].get();
+				if (record->Closing || record->Queued <= Params.MaxQueuedBytes)
+				{
+					i++;
+					continue;
+				}
+				Internal::LogError("udp: dropped a peer with {} bytes queued (the limit is {})", record->Queued, Params.MaxQueuedBytes);
+				PeerEvent dropped;
+				dropped.Type = PeerEvent::Kind::Disconnected;
+				dropped.Peer = record->Id;
+				dropped.Reason = DisconnectReason::Error;
+				dropped.Detail = std::format("{} bytes queued, over the limit of {}", record->Queued, Params.MaxQueuedBytes);
+				events.push_back(std::move(dropped));
+				enet_peer_disconnect_now(record->Link, DISCONNECT_CLOSED);
+				Remove(record);
+			}
+		}
+
+		void RefuseChannels(PeerRecord* record, ENetPeer* link, std::vector<PeerEvent>& events)
+		{
+			const size_t count = link->channelCount;
+			enet_peer_disconnect_now(link, DISCONNECT_CLOSED);
+			if (!record)
+			{
+				Internal::LogWarn("udp: refused a peer with {} channel(s) (DingoNet uses {})", count, Channels);
+				return;
+			}
+			if (!record->Closing)
+			{
+				PeerEvent failed;
+				failed.Type = PeerEvent::Kind::Disconnected;
+				failed.Peer = record->Id;
+				failed.Reason = DisconnectReason::ConnectFailed;
+				failed.Detail = std::format("the host has {} channel(s), not {}", count, Channels);
+				events.push_back(std::move(failed));
+			}
+			Remove(record);
+		}
+
+		void TrimPending(Clock::time_point now)
+		{
+			std::erase_if(Pending, [](const PendingConnect& pending)
+			{
+				return !IsPendingConnect(*pending.Link) || pending.Link->connectID != pending.ConnectId;
+			});
+			for (size_t i = 0; i < Host->peerCount; i++)
+			{
+				ENetPeer* peer = &Host->peers[i];
+				if (IsPendingConnect(*peer) && std::none_of(Pending.begin(), Pending.end(), [peer](const PendingConnect& pending) { return pending.Link == peer; }))
+				{
+					Pending.push_back(PendingConnect{ peer, peer->connectID, now });
+				}
+			}
+			const std::chrono::milliseconds limit(Millis(Params.ConnectTimeout));
+			const size_t excess = Pending.size() > MAX_PENDING_CONNECTS ? Pending.size() - MAX_PENDING_CONNECTS : 0;
+			for (size_t i = 0; i < Pending.size(); i++)
+			{
+				if (i < excess || now - Pending[i].Since >= limit)
+				{
+					enet_peer_reset(Pending[i].Link);
+					Pending[i].Link = nullptr;
+				}
+			}
+			std::erase_if(Pending, [](const PendingConnect& pending) { return !pending.Link; });
+		}
 	};
 
 	UdpTransport::UdpTransport(const UdpParams& params)
@@ -179,24 +329,27 @@ namespace Dingo::Net
 	{
 		m_Impl->Params = params;
 		m_Impl->Params.MaxReliableBytes = (std::max)(params.MaxReliableBytes, static_cast<size_t>(1));
+		m_Impl->Params.MaxQueuedBytes = (std::max)(params.MaxQueuedBytes, m_Impl->Params.MaxReliableBytes);
 		m_Impl->Params.MaxConnections = std::clamp(params.MaxConnections, 1, MAX_PEERS);
+		m_Impl->Params.MaxConnectionsPerAddress = std::clamp(params.MaxConnectionsPerAddress, 1, m_Impl->Params.MaxConnections);
 		m_Impl->Params.ReadBudgetBytes = (std::max)(params.ReadBudgetBytes, static_cast<size_t>(1));
 	}
 
 	std::unique_ptr<UdpTransport> UdpTransport::Listen(const std::string& address, uint16_t port, std::string& error, const UdpParams& params)
 	{
-		return Open(address, port, true, error, params);
+		return Open(address, port, true, CHANNEL_COUNT, error, params);
 	}
 
 	std::unique_ptr<UdpTransport> UdpTransport::Connect(const std::string& address, uint16_t port, std::string& error, const UdpParams& params)
 	{
-		return Open(address, port, false, error, params);
+		return Open(address, port, false, CHANNEL_COUNT, error, params);
 	}
 
-	std::unique_ptr<UdpTransport> UdpTransport::Open(const std::string& address, uint16_t port, bool listen, std::string& error, const UdpParams& params)
+	std::unique_ptr<UdpTransport> UdpTransport::Open(const std::string& address, uint16_t port, bool listen, size_t channels, std::string& error, const UdpParams& params)
 	{
 		std::unique_ptr<UdpTransport> t(new UdpTransport(params));
 		Impl& impl = *t->m_Impl;
+		impl.Channels = std::clamp(channels, static_cast<size_t>(1), CHANNEL_COUNT);
 		if (!AcquireEnet(error))
 		{
 			return nullptr;
@@ -212,7 +365,7 @@ namespace Dingo::Net
 		}
 		native.port = port;
 
-		impl.Host = enet_host_create(listen ? &native : nullptr, listen ? static_cast<size_t>(impl.Params.MaxConnections) : 1, CHANNEL_COUNT, 0, 0);
+		impl.Host = enet_host_create(listen ? &native : nullptr, listen ? static_cast<size_t>(impl.Params.MaxConnections) : 1, impl.Channels, 0, 0);
 		if (!impl.Host)
 		{
 			error = listen ? std::format("can't listen on {}:{}: the port is taken or not allowed", address, port) : std::string("no socket");
@@ -220,7 +373,10 @@ namespace Dingo::Net
 		}
 		impl.Host->maximumWaitingData = (std::max)(impl.Params.ReadBudgetBytes, impl.Params.MaxReliableBytes * 2);
 		impl.Host->maximumPacketSize = impl.Host->maximumWaitingData;
-		Internal::MakeNonInheritable(static_cast<Internal::SocketHandle>(impl.Host->socket));
+		impl.Host->duplicatePeers = static_cast<size_t>(impl.Params.MaxConnectionsPerAddress);
+		const Internal::SocketHandle socket = static_cast<Internal::SocketHandle>(impl.Host->socket);
+		Internal::MakeNonInheritable(socket);
+		Internal::DisableUdpConnReset(socket);
 
 		if (listen)
 		{
@@ -229,7 +385,7 @@ namespace Dingo::Net
 			return t;
 		}
 
-		ENetPeer* link = enet_host_connect(impl.Host, &native, CHANNEL_COUNT, 0);
+		ENetPeer* link = enet_host_connect(impl.Host, &native, impl.Channels, 0);
 		if (!link)
 		{
 			error = "no free connection";
@@ -260,7 +416,7 @@ namespace Dingo::Net
 		}
 
 		Impl::PeerRecord* record = impl.Find(to);
-		if (!record || !record->Connected || record->Closing)
+		if (!record || !record->Connected || record->Closing || record->Queued > impl.Params.MaxQueuedBytes)
 		{
 			return;
 		}
@@ -287,9 +443,16 @@ namespace Dingo::Net
 		if (enet_peer_send(record->Link, channel, packet) != 0)
 		{
 			enet_packet_destroy(packet);
-			Internal::LogWarn("udp: a packet of {} bytes was not queued", data.size());
+			if (!record->SendFailed)
+			{
+				record->SendFailed = true;
+				Internal::LogWarn("udp: a packet of {} bytes to peer {} was not queued; later failures for it are not logged", data.size(), to);
+			}
 			return;
 		}
+		packet->userData = record;
+		packet->freeCallback = &Impl::Released;
+		record->Queued += data.size();
 		BytesOut += data.size();
 	}
 
@@ -301,42 +464,58 @@ namespace Dingo::Net
 			return;
 		}
 		enet_host_flush(impl.Host);
+		impl.DropOverfull(events);
 
 		size_t taken = 0;
+		int failures = 0;
 		ENetEvent event;
 		while (taken < impl.Params.ReadBudgetBytes)
 		{
 			const int result = enet_host_service(impl.Host, &event, 0);
 			if (result < 0)
 			{
-				Internal::LogError("udp: the socket failed while receiving; closing the transport");
-				for (auto& peer : impl.Peers)
+				const int code = Internal::CurrentNativeSocketError();
+				if (impl.SocketFailed(Clock::now(), code))
 				{
-					if (!peer->Closing)
+					Internal::LogError("udp: every send and receive failed for 1 s (OS error {}); closing the transport", code);
+					for (auto& peer : impl.Peers)
 					{
-						PeerEvent failed;
-						failed.Type = PeerEvent::Kind::Disconnected;
-						failed.Peer = peer->Id;
-						failed.Reason = peer->Connected ? DisconnectReason::Error : DisconnectReason::ConnectFailed;
-						failed.Detail = "the socket failed";
-						events.push_back(std::move(failed));
+						if (!peer->Closing)
+						{
+							PeerEvent failed;
+							failed.Type = PeerEvent::Kind::Disconnected;
+							failed.Peer = peer->Id;
+							failed.Reason = peer->Connected ? DisconnectReason::Error : DisconnectReason::ConnectFailed;
+							failed.Detail = "the socket failed";
+							events.push_back(std::move(failed));
+						}
 					}
-					peer->Link->data = nullptr;
+					Close();
+					return;
 				}
-				impl.Peers.clear();
-				Close();
-				return;
+				if (++failures >= MAX_FAILED_SERVICES_PER_POLL)
+				{
+					break;
+				}
+				continue;
 			}
+			impl.FailingSince.reset();
 			if (result == 0)
 			{
 				break;
 			}
+			taken += EVENT_COST_BYTES;
 
 			Impl::PeerRecord* record = static_cast<Impl::PeerRecord*>(event.peer->data);
 			switch (event.type)
 			{
 			case ENET_EVENT_TYPE_CONNECT:
 			{
+				if (event.peer->channelCount < impl.Channels)
+				{
+					impl.RefuseChannels(record, event.peer, events);
+					break;
+				}
 				if (!record)
 				{
 					record = impl.Add(event.peer);
@@ -362,9 +541,8 @@ namespace Dingo::Net
 					oversize.Reason = DisconnectReason::Error;
 					oversize.Detail = std::format("a packet of {} bytes is over the limit of {}", size, impl.Params.MaxReliableBytes);
 					events.push_back(std::move(oversize));
-					ENetPeer* link = record->Link;
+					enet_peer_disconnect_now(record->Link, DISCONNECT_CLOSED);
 					impl.Remove(record);
-					enet_peer_disconnect_now(link, DISCONNECT_CLOSED);
 				}
 				else if (record && !record->Closing)
 				{
@@ -413,6 +591,7 @@ namespace Dingo::Net
 				break;
 			}
 		}
+		impl.TrimPending(Clock::now());
 	}
 
 	void UdpTransport::Disconnect(PeerId peer)
@@ -476,10 +655,11 @@ namespace Dingo::Net
 			}
 			enet_host_flush(impl.Host);
 
-			ClearDatagramLoss(impl.Host);
+			ClearDatagramHook(impl.Host);
 			enet_host_destroy(impl.Host);
 			impl.Host = nullptr;
 			impl.Peers.clear();
+			impl.Pending.clear();
 		}
 		if (impl.Library)
 		{
@@ -498,16 +678,58 @@ namespace Dingo::Net
 			{
 				return;
 			}
-			ClearDatagramLoss(host);
-			if (share <= 0.0f)
+			ChangeDatagramHook(host, [share, seed](DatagramHook& hook)
+			{
+				hook.Share = share;
+				hook.Rng.seed(seed);
+			});
+		}
+
+		void UdpTestAccess::FailIncomingDatagrams(UdpTransport& transport, int count)
+		{
+			ENetHost* host = transport.m_Impl->Host;
+			if (!host)
 			{
 				return;
 			}
+			ChangeDatagramHook(host, [count](DatagramHook& hook) { hook.Failures = count; });
+		}
+
+		void UdpTestAccess::BreakSocket(UdpTransport& transport)
+		{
+			ENetHost* host = transport.m_Impl->Host;
+			if (!host)
 			{
-				std::lock_guard lock(s_LossMutex);
-				s_Loss.push_back(DatagramLoss{ host, share, std::mt19937(seed) });
+				return;
 			}
-			host->intercept = &DropDatagram;
+			enet_socket_destroy(host->socket);
+			host->socket = ENET_SOCKET_NULL;
+		}
+
+		bool UdpTestAccess::IsOpen(const UdpTransport& transport)
+		{
+			return transport.m_Impl->Host != nullptr;
+		}
+
+		int UdpTestAccess::PendingPeers(const UdpTransport& transport)
+		{
+			const ENetHost* host = transport.m_Impl->Host;
+			if (!host)
+			{
+				return 0;
+			}
+			return static_cast<int>(std::count_if(host->peers, host->peers + host->peerCount, [](const ENetPeer& peer) { return IsPendingConnect(peer); }));
+		}
+
+		size_t UdpTestAccess::QueuedBytes(const UdpTransport& transport, PeerId peer)
+		{
+			const UdpTransport::Impl::PeerRecord* record = transport.m_Impl->Find(peer);
+			return record ? record->Queued : 0;
+		}
+
+		std::unique_ptr<UdpTransport> UdpTestAccess::Open(const std::string& address, uint16_t port, bool listen, size_t channels, std::string& error, const UdpParams& params)
+		{
+			return UdpTransport::Open(address, port, listen, channels, error, params);
 		}
 
 	}
