@@ -1,5 +1,6 @@
 #include "TestFramework.h"
 
+#include "SessionMessages.h"
 #include "SteamTransport.h"
 
 #include <DingoNet/Bytes.h>
@@ -373,4 +374,112 @@ TEST(SteamTransportLetsANewSessionsHelloThroughTheIgnoreWindow)
 	p.From(*t);
 	CHECK(p.Events.size() == 1 && p.Events[0].Type == Kind::Connected && p.Events[0].Peer == ANN);
 	CHECK(p.Packets.size() == 2 && p.Packets[0].Data == hello && p.Packets[1].Data == Bytes({ 3 }));
+}
+
+TEST(SteamTransportHostSeatsARejoinWhoseHelloBeatsTheLobby)
+{
+	FakeMessages steam;
+	bool inLobby = true;
+	Session host;
+	SessionParams params;
+	params.Protocol = 7;
+	host.SetParams(params);
+	host.StartHost(SteamTransport::Create(&steam, 0, [&inLobby](uint64_t user) { return user == ANN && inLobby; }), "Host");
+	RequestSession(ANN);
+	steam.Inbox.push_back({ ANN, Hello("Ann") });
+	host.Update();
+	CHECK(host.SeatedCount() == 2);
+
+	host.SetAccepting(false);
+	steam.Inbox.push_back({ ANN, Internal::EncodeBye(LeaveReason::Bye) });
+	inLobby = false;
+	host.Update();
+	CHECK(host.SeatedCount() == 1);
+	host.SetAccepting(true);
+
+	steam.Sent.clear();
+	steam.Inbox.push_back({ ANN, Hello("Ann") });
+	host.Update();
+	inLobby = true;
+	steam.Inbox.push_back({ ANN, Internal::EncodePing(1000) });
+	host.Update();
+	CHECK(host.SeatedCount() == 2);
+	CHECK(std::any_of(steam.Sent.begin(), steam.Sent.end(), [](const auto& s) { return s.first == ANN && !s.second.empty() && s.second[0] == 0xF1; }));
+	CHECK(steam.Accepted == std::vector<uint64_t>({ ANN }));
+}
+
+TEST(SteamTransportHostAcceptsASessionOnceTheLobbyListsItsUser)
+{
+	FakeMessages steam;
+	bool inLobby = false;
+	auto t = SteamTransport::Create(&steam, 0, [&inLobby](uint64_t user) { return user == ANN && inLobby; });
+	CHECK(t != nullptr);
+	if (!t)
+	{
+		return;
+	}
+	RequestSession(ANN);
+	Polled p;
+	p.From(*t);
+	CHECK(steam.Accepted.empty());
+
+	inLobby = true;
+	p.From(*t);
+	CHECK(steam.Accepted == std::vector<uint64_t>({ ANN }));
+	CHECK(p.Events.empty() && p.Packets.empty());
+
+	steam.Inbox.push_back({ ANN, { 1 } });
+	p.From(*t);
+	CHECK(p.Events.size() == 1 && p.Events[0].Type == Kind::Connected && p.Packets.size() == 1);
+}
+
+TEST(SteamTransportHoldsABoundedBacklogUntilTheLobbyListsItsUser)
+{
+	FakeMessages steam;
+	bool inLobby = false;
+	auto t = SteamTransport::Create(&steam, 0, [&inLobby](uint64_t user) { return user == ANN && inLobby; });
+	CHECK(t != nullptr);
+	if (!t)
+	{
+		return;
+	}
+	const Bytes hello = Hello("Ann");
+	steam.Inbox.push_back({ ANN, hello });
+	steam.Inbox.push_back({ ANN, Bytes(70000, 7) });
+	for (int i = 1; i < 40; i++)
+	{
+		steam.Inbox.push_back({ ANN, Bytes(1, static_cast<uint8_t>(i)) });
+	}
+	Polled p;
+	p.From(*t);
+	CHECK(p.Events.empty() && p.Packets.empty() && t->BytesIn == 0);
+
+	inLobby = true;
+	steam.Inbox.push_back({ ANN, Bytes(1, 99) });
+	p.From(*t);
+	CHECK(p.Events.size() == 1 && p.Events[0].Type == Kind::Connected && p.Events[0].Peer == ANN);
+	CHECK(p.Packets.size() == 33 && p.Packets[0].Data == hello && p.Packets[1].Data == Bytes({ 1 }) && p.Packets[31].Data == Bytes({ 31 })
+		&& p.Packets[32].Data == Bytes({ 99 }));
+	CHECK(t->BytesIn == hello.size() + 32);
+}
+
+TEST(SteamTransportHoldsNothingBeforeAHelloNorAfterTheSessionFails)
+{
+	FakeMessages steam;
+	bool inLobby = false;
+	auto t = SteamTransport::Create(&steam, 0, [&inLobby](uint64_t user) { return (user == ANN || user == STRANGER) && inLobby; });
+	CHECK(t != nullptr);
+	if (!t)
+	{
+		return;
+	}
+	steam.Inbox.push_back({ ANN, { 1 } });
+	steam.Inbox.push_back({ STRANGER, Hello("Stranger") });
+	Polled p;
+	p.From(*t);
+	FailSession(STRANGER, k_ESteamNetConnectionEnd_Misc_Timeout);
+
+	inLobby = true;
+	p.From(*t);
+	CHECK(p.Events.empty() && p.Packets.empty() && t->BytesIn == 0);
 }
