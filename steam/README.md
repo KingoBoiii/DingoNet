@@ -21,3 +21,7 @@ and CI never touch this folder; generating with `--steam-sdk=<SDK root>` adds
 - After `Disconnect` a peer's messages are dropped for 1 s, so packets still in flight don't
   bring it back as a new connection; a session `Hello` (first byte `0xF0`) ends that early, so a
   client that rejoins the moment it is kicked or timed out gets in.
+- A host holds a `Hello` (and what follows it) or a session request from a user `allowed`
+  doesn't yet say yes to for up to 3 s, and asks
+  again each `Poll`: a rejoin over a Steam session still open from the last game can arrive
+  before the host's lobby lists the user again.

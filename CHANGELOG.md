@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.1
+
+- Fixes issue #3: a player who left a Steam game could not rejoin the same lobby ("could not reach host"; on the host, "no Hello within 5 s"). Both sides leave the Steam session open after a `Bye`, so the rejoin's `Hello` came over that open session before the host's copy of the lobby listed the player again. `allowed` said no, so the host's `SteamTransport` dropped the `Hello`. The player's next ping then got through, which seated it as a connection that would never say `Hello`.
+- A host's `SteamTransport` now holds a not-yet-listed user's messages from its `Hello` on (32 messages and 64 KB per user, 16 users) and its session request (64 users, a cap of their own) for up to 3 s, asks `allowed` again on each `Poll`, and passes them on in order once it says yes. Details: `docs/steam.md`.
+- A source fix in `steam/` only: the library, the API and the session wire are unchanged (`k_SessionProtocol` stays 2). The fix works when the host runs it, whichever version the client runs.
+- Released `v0.3.1`, build and date to fill in at the release.
+
 ## v0.3.0
 
 - Phase 1 bundles ENet 1.3.18 (commit `2662c0de`, MIT) into `DingoNet.lib`; its license ships as `THIRD_PARTY.txt`.
@@ -7,7 +14,7 @@
 - Phase 3 LAN discovery, `LanHost` and `LanBrowser` (query/response over raw UDP, queries also sent to each interface's directed broadcast). Details: `docs/discovery.md`.
 - The Opus review (`.claude/reviews/2026-10-27-v0.3-review.md`, F1–F8) is fixed (`.claude/reviews/2026-10-27-v0.3-review-fixes.md`).
 - The session wire is unchanged (`k_SessionProtocol` stays 2). 191 tests on Windows and Linux; checked Windows↔Linux over UDP and by LAN broadcast in both directions.
-- Released `v0.3.0`, build and date to fill in at the release.
+- Released `v0.3.0`, build 67, 2026-10-29.
 
 ## v0.2.0
 
